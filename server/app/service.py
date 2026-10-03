@@ -560,6 +560,7 @@ def stats(s: Session, days: int | None = 90) -> dict:
 
 def activity_feed(s: Session, *, limit: int = 100, actor_type: str | None = None, before_id: int | None = None) -> list[dict]:
     stmt = (select(Event, Opportunity).join(Opportunity, Event.opportunity_id == Opportunity.id)
+            .where(Opportunity.archived_at.is_(None))
             .order_by(Event.id.desc()).limit(min(limit, 300)))
     if actor_type:
         stmt = stmt.where(Event.actor_type == actor_type)

@@ -5,8 +5,8 @@ provider only stores clients, codes and tokens. The "log in and approve" step is
 
 import secrets
 import time
-from urllib.parse import urlsplit
 from datetime import UTC, timedelta
+from urllib.parse import urlsplit
 
 from mcp.server.auth.provider import (
     AccessToken,

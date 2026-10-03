@@ -22,6 +22,9 @@ BASE, EMAIL, PASSWORD = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
 ok = lambda cond, msg: print(("  ✓ " if cond else "  ✗ FAIL ") + msg) or (cond or sys.exit(1))  # noqa: E731
 
 
+URLS: dict[int, str] = {}
+
+
 def structured(result):
     if result.is_error:
         raise RuntimeError(result.content[0].text)
@@ -40,6 +43,7 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
             "budget": "$60/hr", "fit": 4, "reminder_at": "2030-01-02", "reminder_note": "Check"}))
         opp = r["opportunity"]
         created.append(opp["id"])
+        URLS[opp["id"]] = url
         ok(r["created"] and opp["channel"] == "upwork" and opp["needs_review"], f"[{mode}] add: channel inferred, review flagged")
         r2 = structured(await c.call_tool("add_opportunity", {"company": "dup", "application_url": url.split("?")[0].replace("Smoke-Test-AI-agent_", "")}))
         ok(not r2["created"] and r2["opportunity"]["id"] == opp["id"], f"[{mode}] same posting (different URL form) deduplicated")
@@ -137,10 +141,10 @@ async def main():
     print("Cleanup")
     for oid in created:
         web.delete(f"/api/opportunities/{oid}")
-    first = web.get(f"/api/activity?limit=300").json()
-    url = next(e["changes"]["application_url"][1] for e in first if e["opportunity_id"] == created[0] and e["kind"] == "created")
-    again = web.post("/api/opportunities", json={"company": "x", "application_url": url}).json()
+    again = web.post("/api/opportunities", json={"company": "x", "application_url": URLS[created[0]]}).json()
     ok(not again["created"] and again["opportunity"]["deleted"], "re-adding a deleted posting does not revive it")
+    feed = web.get("/api/activity", params={"limit": 50}).json()
+    ok(all(e["opportunity_id"] not in created for e in feed), "deleted deals are hidden from the activity feed")
     web.delete(f"/api/agents/keys/{key['id']}")
     after = httpx.get(f"{BASE}/api/agenda", headers={"Authorization": f"Bearer {key['token']}"})
     ok(after.status_code == 401, "revoked key refused")

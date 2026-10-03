@@ -1,4 +1,4 @@
-"""Admin commands: python -m app.cli create-user EMAIL NAME  |  reset-password EMAIL"""
+"""Admin commands: python -m app.cli create-user EMAIL NAME  |  reset-password EMAIL  |  delete-user EMAIL"""
 
 import secrets
 import sys
@@ -21,6 +21,13 @@ def main() -> None:
             if not user:
                 sys.exit("No such user.")
             user.password_hash = auth.hash_password(password)
+        elif cmd == "delete-user" and len(args) == 1:
+            user = s.scalar(select(User).where(User.email == args[0].strip().lower()))
+            if not user:
+                sys.exit("No such user.")
+            s.delete(user)  # sessions and the user's API keys/tokens cascade
+            print(f"deleted {user.email}")
+            return
         else:
             sys.exit(__doc__)
     print(f"{user.email}  password: {password}  (change it in Settings)")
