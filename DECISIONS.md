@@ -39,10 +39,20 @@ deliberately not taken — so the owner can overrule any of them.
 - Storage: SQLite (WAL) in the app's own state dir — maximum isolation from other projects on the box, nothing to run.
 - Gone-quiet thresholds (days idle): matcher 7, applied 5, replied 2, call 2, proposal 3.
 - Timezone: adopted from the browser on first login; editable in Settings.
-- Domain: `sales.firstglance.io` (change `DOMAIN` in `deploy/config.sh`).
+- Domain: `sales.muhammadtalhabinzia.com` (owner's call — independent of FirstGlance; apex stays the about site).
 
 **Not built (deliberately)**
 - Separate Companies/Contacts tables — company is text on the opportunity; add when one client has many deals.
 - Email/LinkedIn/Upwork syncing inside the app — that's the agents' job, through MCP.
 - Multi-tenant workspaces, roles, passkeys, notifications by email — not needed for one person.
 - Docker / a separate Postgres — SQLite + a sandboxed systemd unit give the isolation with less to maintain.
+
+## Hosting — 2026-10-03
+
+- The owner moved the personal about site (`muhammadtalhabinzia.com`) to the same new server first; it now lives
+  in its own repo `~/Code/personal-site` (it was in no repo before) with the same isolation pattern.
+- Fresh Let's Encrypt certs on the new box instead of copying the old box's keys.
+- DNS points at the new box's current public IP (<server-ip>). When FirstGlance's Elastic IP moves to this box,
+  that IP is released — re-point `@`, `www`, `sales` at Namecheap to <elastic-ip> in the same step.
+- The about site's contact beacon is proxied to the FirstGlance API by Elastic IP (not 127.0.0.1:5000), so it
+  keeps emailing across the cutover without an edit.

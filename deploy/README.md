@@ -23,13 +23,15 @@ database server, no shared users, no shared secrets.
 | 3000 / 3001 | FirstGlance web (blue-green) |
 | 5000 | FirstGlance API (gunicorn) |
 | 8100 | Sales Pipeline |
+| — | personal-site (static, nginx only) — `~/Code/personal-site` |
 
 ## First time (once)
 
-1. DNS: `A` record for `DOMAIN` → the server IP (Route 53, profile `fg-new`).
+1. DNS: `A` record for `DOMAIN` → the server IP (muhammadtalhabinzia.com is at Namecheap).
 2. Ports 80 + 443 must be reachable from the internet for Let's Encrypt and for Claude's connector
    (security group `<security-group>`).
-3. `bash deploy/provision.sh` — creates the user, units, nginx site, TLS cert, deploys, starts.
+3. `bash deploy/provision.sh app` — user, units, code, start (no DNS needed); then
+   `bash deploy/provision.sh web` — nginx site + TLS cert (needs the DNS record live).
 4. `bash deploy/admin.sh create-user you@example.com "Your Name"` — prints a password; change it in Settings.
 
 ## Every deploy
@@ -46,4 +48,6 @@ sudo journalctl -u sales-pipeline -n 100      # logs
 ls /var/lib/sales-pipeline/backups            # snapshots (restore: stop service, copy over sales.db, start)
 ```
 
-When FirstGlance cuts over to this box (the Elastic IP moves here), update the `A` record and `HOST` in `config.sh`.
+When FirstGlance cuts over to this box (the Elastic IP <elastic-ip> moves here, releasing <server-ip>),
+re-point `@`, `www` and `sales` at Namecheap to <elastic-ip> and update `HOST` in `deploy/config.sh` and
+`~/Code/personal-site/deploy/deploy.sh`.

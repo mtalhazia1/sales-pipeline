@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source deploy/config.sh
 SSH="ssh -i $SSH_KEY -o ConnectTimeout=15 $SSH_USER@$HOST"
-RSYNC=(rsync -az --delete --rsync-path="sudo rsync" --chown=root:root -e "ssh -i $SSH_KEY")
+RSYNC=(rsync -rlptz --delete --rsync-path="sudo rsync" -e "ssh -i $SSH_KEY")
 
 echo "→ building web UI"
 (cd web && npm ci --silent && npm run build >/dev/null)
@@ -14,6 +14,8 @@ echo "→ syncing to $HOST"
 $SSH "sudo mkdir -p /srv/$APP/server /srv/$APP/web/dist"
 "${RSYNC[@]}" --exclude __pycache__ --exclude 'scripts/seed_demo.py' server/ "$SSH_USER@$HOST:/srv/$APP/server/"
 "${RSYNC[@]}" web/dist/ "$SSH_USER@$HOST:/srv/$APP/web/dist/"
+# Code is root-owned and world-readable: the app user can read it but never modify it.
+$SSH "sudo chown -R root:root /srv/$APP/server /srv/$APP/web && sudo chmod -R u=rwX,go=rX /srv/$APP/server /srv/$APP/web"
 
 echo "→ installing dependencies"
 $SSH "sudo bash -s" <<REMOTE
