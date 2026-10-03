@@ -130,9 +130,17 @@ async def main():
     after = httpx.get(f"{BASE}/api/agenda", headers={"Authorization": f"Bearer {ref['access_token']}"})
     ok(after.status_code == 401, "disconnect revokes the app's tokens")
 
+    evil = httpx.post(asm["registration_endpoint"], json={"client_name": "Evil", "redirect_uris": ["javascript:alert(1)"],
+                                                         "token_endpoint_auth_method": "none"})
+    ok(evil.status_code == 400, "javascript: redirect URI refused at registration")
+
     print("Cleanup")
     for oid in created:
         web.delete(f"/api/opportunities/{oid}")
+    first = web.get(f"/api/activity?limit=300").json()
+    url = next(e["changes"]["application_url"][1] for e in first if e["opportunity_id"] == created[0] and e["kind"] == "created")
+    again = web.post("/api/opportunities", json={"company": "x", "application_url": url}).json()
+    ok(not again["created"] and again["opportunity"]["deleted"], "re-adding a deleted posting does not revive it")
     web.delete(f"/api/agents/keys/{key['id']}")
     after = httpx.get(f"{BASE}/api/agenda", headers={"Authorization": f"Bearer {key['token']}"})
     ok(after.status_code == 401, "revoked key refused")

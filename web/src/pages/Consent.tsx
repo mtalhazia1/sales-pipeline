@@ -19,6 +19,9 @@ export function Consent() {
   const answer = async (allow: boolean) => {
     setBusy(true);
     const r = await api.post<{ redirect_to: string }>(`/oauth/requests/${encodeURIComponent(id)}`, { allow });
+    // The server only issues vetted redirect URIs; refuse script-capable schemes here as well.
+    const scheme = r.redirect_to.split(":")[0].toLowerCase();
+    if (["javascript", "data", "vbscript", "blob", "file", "about"].includes(scheme)) throw new Error("Unsafe redirect");
     location.assign(r.redirect_to);
   };
 

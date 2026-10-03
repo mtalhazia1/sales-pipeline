@@ -184,6 +184,7 @@ def summary(opp: Opportunity) -> dict:
     nxt = min(open_rem, key=lambda r: r.due_at) if open_rem else None
     return {
         "id": opp.id,
+        "deleted": opp.archived_at is not None,
         "kind": opp.kind,
         "company": opp.company,
         "title": opp.title,
@@ -256,9 +257,7 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
     if unknown:
         raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
     if existing := find_duplicate(s, data.get("application_url")):
-        if existing.archived_at:  # re-adding something deleted brings it back
-            existing.archived_at = None
-            _event(s, existing, actor, "updated", "Restored (added again)")
+        # Includes deleted ones: a deletion sticks, so an agent re-finding the same posting can't revive it.
         return existing, False
 
     values = {k: _clean(k, v) for k, v in data.items() if k in EDITABLE}
@@ -420,7 +419,7 @@ def add_reminder(s: Session, actor: Actor, opp_id: int, due: str | datetime, not
 def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | None = None,
                     due: str | None = None, note: str | None = None) -> Reminder:
     r = s.get(Reminder, reminder_id)
-    if not r:
+    if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
     if done is not None:
         r.done_at = utcnow() if done else None
@@ -436,7 +435,7 @@ def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | 
 
 def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
     r = s.get(Reminder, reminder_id)
-    if not r:
+    if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
     s.delete(r)
 

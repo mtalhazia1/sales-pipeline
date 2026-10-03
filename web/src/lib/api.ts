@@ -19,6 +19,7 @@ export type ReminderRef = { id: number; due_at: string; note: string };
 
 export type Summary = {
   id: number;
+  deleted: boolean;
   kind: string;
   company: string;
   title: string | null;

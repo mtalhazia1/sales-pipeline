@@ -5,6 +5,7 @@ provider only stores clients, codes and tokens. The "log in and approve" step is
 
 import secrets
 import time
+from urllib.parse import urlsplit
 from datetime import UTC, timedelta
 
 from mcp.server.auth.provider import (
@@ -12,6 +13,7 @@ from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
@@ -30,6 +32,21 @@ SCOPE = "sales"
 _pending: dict[str, tuple[float, str, AuthorizationParams]] = {}
 
 
+_BLOCKED_SCHEMES = {"javascript", "data", "vbscript", "blob", "file", "about"}
+
+
+def _safe_redirect(uri: str) -> bool:
+    """https anywhere; http only to loopback (native clients like Claude Code); custom app schemes
+    (cursor://…) allowed; script-capable schemes never — the consent page navigates to this URI."""
+    parts = urlsplit(uri)
+    scheme = parts.scheme.lower()
+    if scheme == "https":
+        return bool(parts.hostname)
+    if scheme == "http":
+        return parts.hostname in ("localhost", "127.0.0.1", "::1")
+    return bool(scheme) and scheme not in _BLOCKED_SCHEMES
+
+
 def _client_name(info: OAuthClientInformationFull) -> str:
     return (info.client_name or "MCP client").strip()[:80]
 
@@ -41,6 +58,9 @@ class Provider:
             return OAuthClientInformationFull.model_validate(row.info) if row else None
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        for uri in client_info.redirect_uris or []:
+            if not _safe_redirect(str(uri)):
+                raise RegistrationError("invalid_redirect_uri", f"Redirect URI not allowed: {uri}")
         with session_scope() as s:
             s.merge(OAuthClient(client_id=client_info.client_id, info=client_info.model_dump(mode="json")))
 
@@ -138,6 +158,8 @@ def approve(s, user: User, request_id: str, allow: bool) -> str:
     if not entry or entry[0] < time.time() - 600:
         raise ServiceError("This connection request expired — start it again from your app.", 404)
     _, client_id, params = entry
+    if not _safe_redirect(str(params.redirect_uri)):
+        raise ServiceError("This app's redirect address isn't allowed.", 400)
     if not allow:
         return construct_redirect_uri(str(params.redirect_uri), error="access_denied", state=params.state)
     code = secrets.token_urlsafe(32)

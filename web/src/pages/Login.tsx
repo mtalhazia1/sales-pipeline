@@ -6,7 +6,13 @@ import { Button } from "../components/ui";
 
 /** Only same-site paths are honoured as ?next= targets (no open redirect). */
 export function safeNext(next: string | null): string {
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+  if (!next || !next.startsWith("/")) return "/";
+  try {
+    const url = new URL(next, location.origin); // resolves "//x", "/\\x" etc. the way the browser would
+    return url.origin === location.origin ? url.pathname + url.search + url.hash : "/";
+  } catch {
+    return "/";
+  }
 }
 
 export function Login() {

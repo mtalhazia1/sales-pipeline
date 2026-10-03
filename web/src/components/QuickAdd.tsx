@@ -52,6 +52,7 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
       act.refresh(res.opportunity.id);
       onClose();
       if (res.created) toast.ok(`Added ${res.opportunity.company}`, { label: "Open", run: () => drawer.open(res.opportunity.id) });
+      else if (res.opportunity.deleted) toast.error(`You deleted ${res.opportunity.company} earlier — not re-added`);
       else {
         toast.ok("Already in your pipeline — opened it");
         drawer.open(res.opportunity.id);

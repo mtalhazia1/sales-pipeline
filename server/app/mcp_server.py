@@ -127,7 +127,8 @@ def add_opportunity(
 ) -> dict:
     """Add a job or project. Safe to call for something that may already exist: if the
     application_url matches an existing record, nothing changes and that record is returned
-    with created=false (use update_opportunity / log_activity to change it)."""
+    with created=false (use update_opportunity / log_activity to change it). deleted=true means the
+    owner deleted it on purpose — leave it alone."""
     data = {k: v for k, v in locals().items() if v is not None}
 
     def go(s):
