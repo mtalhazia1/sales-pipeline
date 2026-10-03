@@ -1,0 +1,15 @@
+[Unit]
+Description=Sales Pipeline daily SQLite snapshot
+
+[Service]
+Type=oneshot
+User=sales-pipeline
+Group=sales-pipeline
+WorkingDirectory=/srv/sales-pipeline/server
+Environment=SP_DATA_DIR=/var/lib/sales-pipeline
+ExecStart=/srv/sales-pipeline/.venv/bin/python -m app.backup
+StateDirectory=sales-pipeline
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

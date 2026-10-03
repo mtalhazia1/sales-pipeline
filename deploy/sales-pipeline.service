@@ -1,0 +1,29 @@
+[Unit]
+Description=Sales Pipeline (web UI + REST + MCP)
+After=network.target
+
+[Service]
+User=sales-pipeline
+Group=sales-pipeline
+WorkingDirectory=/srv/sales-pipeline/server
+Environment=SP_BASE_URL=https://__DOMAIN__
+Environment=SP_DATA_DIR=/var/lib/sales-pipeline
+Environment=SP_WEB_DIST=/srv/sales-pipeline/web/dist
+ExecStartPre=/srv/sales-pipeline/.venv/bin/alembic upgrade head
+# ONE worker on purpose: login throttling and pending OAuth consents live in process memory.
+ExecStart=/srv/sales-pipeline/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port __PORT__ --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+Restart=always
+RestartSec=3
+
+# Isolation from the other projects on this box (cheap, zero maintenance):
+# own user, read-only OS and code, writable only its own state dir, no access to /home, capped RAM.
+StateDirectory=sales-pipeline
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Sales Pipeline backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
