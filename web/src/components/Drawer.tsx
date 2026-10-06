@@ -1,10 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight, Bell, Bot, Check, ChevronDown, ExternalLink, Inbox, MessageSquareReply, MessageSquareText,
   Phone, StickyNote, Trash2, Trophy, User as UserIcon, X, XCircle,
 } from "lucide-react";
-import type { Detail, Option, TimelineEvent } from "../lib/api";
-import { ago, due, hostOf, href, inDays, money, nextMonday } from "../lib/format";
+import { ApiError, type Detail, type Option, type TimelineEvent } from "../lib/api";
+import { ago, due, hostOf, href, inDays, money, nextMonday, parseMoney, snoozed } from "../lib/format";
 import { labelOf, useMeta } from "../lib/meta";
 import { useDrawer, useOppActions, useOpportunity } from "../lib/hooks";
 import { Button, Fit, Modal, Segmented, Select, Spinner, StagePill, YourMove, cx, useToast } from "./ui";
@@ -32,13 +32,25 @@ export function Drawer() {
     <>
       <div className="fixed inset-0 z-40 bg-black/25 md:bg-black/10" onClick={drawer.close} />
       <aside className="anim-slide fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-line bg-panel shadow-2xl sm:w-[560px]">
+        {(!opp || error) && (
+          <div className="flex justify-end border-b border-line px-4 py-2.5">
+            <button className="rounded-lg p-2 text-muted hover:bg-panel-2 hover:text-fg" onClick={drawer.close} title="Close (Esc)">
+              <X size={18} />
+            </button>
+          </div>
+        )}
         {isLoading && (
           <div className="flex flex-1 items-center justify-center">
             <Spinner />
           </div>
         )}
-        {error && <div className="p-6 text-muted">This opportunity no longer exists.</div>}
-        {opp && <DrawerBody key={opp.id} opp={opp} />}
+        {error && (
+          <div className="p-6 text-muted">
+            {error instanceof ApiError && error.status === 404 ? "This opportunity no longer exists." : `Couldn't load it — ${error.message}`}
+          </div>
+        )}
+        {/* After a delete the cache can still hold the old record next to a 404 — never show it as editable. */}
+        {opp && !error && <DrawerBody key={opp.id} opp={opp} />}
       </aside>
     </>
   );
@@ -51,7 +63,9 @@ function DrawerBody({ opp }: { opp: Detail }) {
   const confirm = useConfirm();
   const [composer, setComposer] = useState<string | null>(null);
   const [lostOpen, setLostOpen] = useState(false);
-  const save = (patch: Record<string, unknown>) => act.update.mutate({ id: opp.id, ...patch });
+  const toast = useToast();
+  // `revert` puts an inline field back to the saved value when the server refuses the edit.
+  const save = (patch: Record<string, unknown>, revert?: () => void) => act.update.mutate({ id: opp.id, ...patch }, { onError: revert });
   const closed = opp.stage === "won" || opp.stage === "lost";
   const stages = (meta?.stages ?? []).filter((s) => s.value !== "matcher" || opp.channel === "toptal" || opp.stage === "matcher");
 
@@ -116,8 +130,8 @@ function DrawerBody({ opp }: { opp: Detail }) {
         )}
 
         <div className="space-y-1 px-5 pt-4">
-          <InlineText value={opp.company} onSave={(v) => save({ company: v })} className="text-xl font-semibold tracking-tight" placeholder="Company" required />
-          <InlineText value={opp.title ?? ""} onSave={(v) => save({ title: v })} className="text-[15px] text-muted" placeholder="Add a title…" />
+          <InlineText value={opp.company} onSave={(v, revert) => save({ company: v }, revert)} className="text-xl font-semibold tracking-tight" placeholder="Company" required />
+          <InlineText value={opp.title ?? ""} onSave={(v, revert) => save({ title: v }, revert)} className="text-[15px] text-muted" placeholder="Add a title…" />
         </div>
 
         {/* quick actions */}
@@ -185,36 +199,48 @@ function DrawerBody({ opp }: { opp: Detail }) {
               />
             </Field>
             <Field label="Budget (as posted)">
-              <InlineInput value={opp.budget} onSave={(v) => save({ budget: v })} placeholder="$50-70/hr" />
+              <InlineInput value={opp.budget} onSave={(v, revert) => save({ budget: v }, revert)} placeholder="$50-70/hr" />
             </Field>
             <Field label="Deal value (USD)">
-              <InlineInput value={opp.value != null ? String(opp.value) : ""} onSave={(v) => save({ value: v ? Number(v.replace(/[$,k]/gi, "")) * (/k/i.test(v) ? 1000 : 1) : null })} placeholder="8000" inputMode="decimal" />
+              <InlineInput
+                value={opp.value != null ? String(opp.value) : ""}
+                onSave={(v, revert) => {
+                  const n = v ? parseMoney(v) : null;
+                  if (v && n == null) {
+                    revert();
+                    return toast.error(`"${v}" isn't an amount — try 8000, 8k or 1.5M`);
+                  }
+                  save({ value: n }, revert);
+                }}
+                placeholder="8000, 8k, 1.5M"
+                inputMode="decimal"
+              />
             </Field>
             <Field label="Contact">
-              <InlineInput value={opp.contact_name} onSave={(v) => save({ contact_name: v })} placeholder="Name" />
+              <InlineInput value={opp.contact_name} onSave={(v, revert) => save({ contact_name: v }, revert)} placeholder="Name" />
             </Field>
             <Field label="Contact email">
-              <InlineInput value={opp.contact_email} onSave={(v) => save({ contact_email: v })} placeholder="name@company.com" type="email" />
+              <InlineInput value={opp.contact_email} onSave={(v, revert) => save({ contact_email: v }, revert)} placeholder="name@company.com" type="email" />
             </Field>
             <Field label="Contact profile">
-              <LinkInput value={opp.contact_url} onSave={(v) => save({ contact_url: v })} placeholder="linkedin.com/in/…" />
+              <LinkInput value={opp.contact_url} onSave={(v, revert) => save({ contact_url: v }, revert)} placeholder="linkedin.com/in/…" />
             </Field>
             <Field label="Company site">
-              <LinkInput value={opp.company_url} onSave={(v) => save({ company_url: v })} placeholder="company.com" />
+              <LinkInput value={opp.company_url} onSave={(v, revert) => save({ company_url: v }, revert)} placeholder="company.com" />
             </Field>
             <div className="sm:col-span-2">
               <Field label="Application / posting URL">
-                <LinkInput value={opp.application_url} onSave={(v) => save({ application_url: v })} placeholder="https://…" />
+                <LinkInput value={opp.application_url} onSave={(v, revert) => save({ application_url: v }, revert)} placeholder="https://…" />
               </Field>
             </div>
           </div>
         </Section>
 
         <Section title="Notes">
-          <InlineArea value={opp.notes} onSave={(v) => save({ notes: v })} placeholder="Anything worth remembering — pricing, red flags, what they care about…" />
+          <InlineArea value={opp.notes} onSave={(v, revert) => save({ notes: v }, revert)} placeholder="Anything worth remembering — pricing, red flags, what they care about…" />
         </Section>
 
-        <Description text={opp.description} onSave={(v) => save({ description: v })} />
+        <Description text={opp.description} onSave={(v, revert) => save({ description: v }, revert)} />
 
         <Section title="Timeline">
           <Timeline events={opp.events} />
@@ -239,39 +265,58 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+// A <div>, not a <label>: a label forwards any click on its text or empty space to the first button
+// inside (Fit's first star, Type's first option), silently changing data.
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="block">
+    <div role="group" aria-label={label}>
       <span className="label">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
-// ---------------------------------------------------------------- inline editing (save on blur / Enter)
+// ---------------------------------------------------------------- inline editing (save on blur / Enter, Esc cancels)
+
+type OnSave = (v: string, revert: () => void) => void;
+
+function useInlineEdit(saved: string, onSave: OnSave, opts: { trim?: boolean; required?: boolean; enterSaves?: boolean } = {}) {
+  const { trim = true, required = false, enterSaves = true } = opts;
+  const [v, setV] = useState(saved);
+  const cancelled = useRef(false);
+  useEffect(() => setV(saved), [saved]);
+  const norm = (s: string) => (trim ? s.trim() : s);
+  return {
+    value: v,
+    onChange: (e: React.ChangeEvent<HTMLInputElement & HTMLTextAreaElement>) => setV(e.target.value),
+    onBlur: () => {
+      if (cancelled.current || (required && !norm(v))) {
+        cancelled.current = false;
+        return setV(saved);
+      }
+      if (norm(v) !== norm(saved)) onSave(norm(v), () => setV(saved));
+    },
+    onKeyDown: (e: React.KeyboardEvent<HTMLInputElement & HTMLTextAreaElement>) => {
+      if (e.key === "Escape") {
+        cancelled.current = true;
+        e.currentTarget.blur();
+      } else if (enterSaves && e.key === "Enter") e.currentTarget.blur();
+    },
+  };
+}
 
 function InlineText({ value, onSave, className, placeholder, required }: {
   value: string;
-  onSave: (v: string) => void;
+  onSave: OnSave;
   className?: string;
   placeholder?: string;
   required?: boolean;
 }) {
-  const [v, setV] = useState(value);
-  useEffect(() => setV(value), [value]);
-  const commit = () => {
-    const t = v.trim();
-    if (t === value.trim()) return;
-    if (required && !t) return setV(value);
-    onSave(t);
-  };
+  const edit = useInlineEdit(value, onSave, { required });
   return (
     <input
-      value={v}
+      {...edit}
       placeholder={placeholder}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
       className={cx("-mx-1.5 w-full rounded-md bg-transparent px-1.5 py-0.5 outline-none hover:bg-panel-2 focus:bg-panel-2 placeholder:text-muted/60", className)}
     />
   );
@@ -279,23 +324,13 @@ function InlineText({ value, onSave, className, placeholder, required }: {
 
 function InlineInput({ value, onSave, ...rest }: {
   value: string | null;
-  onSave: (v: string) => void;
+  onSave: OnSave;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">) {
-  const [v, setV] = useState(value ?? "");
-  useEffect(() => setV(value ?? ""), [value]);
-  return (
-    <input
-      {...rest}
-      value={v}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => v.trim() !== (value ?? "").trim() && onSave(v.trim())}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-      className="field"
-    />
-  );
+  const edit = useInlineEdit(value ?? "", onSave);
+  return <input {...rest} {...edit} className="field" />;
 }
 
-function LinkInput(props: { value: string | null; onSave: (v: string) => void; placeholder?: string }) {
+function LinkInput(props: { value: string | null; onSave: OnSave; placeholder?: string }) {
   return (
     <div className="flex items-center gap-1.5">
       <InlineInput {...props} />
@@ -308,22 +343,12 @@ function LinkInput(props: { value: string | null; onSave: (v: string) => void; p
   );
 }
 
-function InlineArea({ value, onSave, placeholder, rows = 4 }: { value: string | null; onSave: (v: string) => void; placeholder?: string; rows?: number }) {
-  const [v, setV] = useState(value ?? "");
-  useEffect(() => setV(value ?? ""), [value]);
-  return (
-    <textarea
-      value={v}
-      rows={rows}
-      placeholder={placeholder}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => v !== (value ?? "") && onSave(v)}
-      className="field min-h-24 resize-y leading-relaxed"
-    />
-  );
+function InlineArea({ value, onSave, placeholder, rows = 4 }: { value: string | null; onSave: OnSave; placeholder?: string; rows?: number }) {
+  const edit = useInlineEdit(value ?? "", onSave, { trim: false, enterSaves: false });
+  return <textarea {...edit} rows={rows} placeholder={placeholder} className="field min-h-24 resize-y leading-relaxed" />;
 }
 
-function Description({ text, onSave }: { text: string | null; onSave: (v: string) => void }) {
+function Description({ text, onSave }: { text: string | null; onSave: OnSave }) {
   const [open, setOpen] = useState(false);
   return (
     <section className="mt-4 border-t border-line px-5 py-4">
@@ -351,12 +376,22 @@ function Composer({ kind, opp, onDone }: { kind: string; opp: Detail; onDone: ()
   const [body, setBody] = useState("");
   const [when, setWhen] = useState("");
   const [followUp, setFollowUp] = useState(kind === "my_message" ? inDays(3) : "");
+  const logged = useRef(false); // if only the follow-up failed, Save again must not log the message twice
   if (kind === "reminder") return <ReminderComposer opp={opp} onDone={onDone} />;
   const cfg = COMPOSER[kind];
+  const busy = act.log.isPending || act.remind.isPending;
   const submit = async () => {
-    await act.log.mutateAsync({ id: opp.id, kind, body, occurred_at: when || undefined });
-    if (followUp) await act.remind.mutateAsync({ id: opp.id, due_at: followUp, note: "Follow up if no reply" });
-    onDone();
+    if (busy) return;
+    try {
+      if (!logged.current) {
+        await act.log.mutateAsync({ id: opp.id, kind, body, occurred_at: when || undefined });
+        logged.current = true;
+      }
+      if (followUp) await act.remind.mutateAsync({ id: opp.id, due_at: followUp, note: "Follow up if no reply" });
+      onDone();
+    } catch {
+      // the mutation already showed the error toast
+    }
   };
   return (
     <div className="anim-pop mx-5 mt-3 space-y-2 rounded-xl border border-line bg-panel-2/60 p-3">
@@ -385,7 +420,7 @@ function Composer({ kind, opp, onDone }: { kind: string; opp: Detail; onDone: ()
           <Button size="sm" variant="ghost" onClick={onDone}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" onClick={submit} disabled={act.log.isPending}>
+          <Button size="sm" variant="primary" onClick={submit} disabled={busy}>
             Save
           </Button>
         </div>
@@ -399,8 +434,13 @@ function ReminderComposer({ opp, onDone }: { opp: Detail; onDone: () => void }) 
   const [note, setNote] = useState("Follow up");
   const [date, setDate] = useState(inDays(3));
   const set = async (d: string) => {
-    await act.remind.mutateAsync({ id: opp.id, due_at: d, note });
-    onDone();
+    if (act.remind.isPending) return;
+    try {
+      await act.remind.mutateAsync({ id: opp.id, due_at: d, note });
+      onDone();
+    } catch {
+      // error toast already shown
+    }
   };
   return (
     <div className="anim-pop mx-5 mt-3 space-y-2 rounded-xl border border-line bg-panel-2/60 p-3">
@@ -431,18 +471,29 @@ function Reminders({ opp }: { opp: Detail }) {
           <div key={r.id} className="group flex items-center gap-2.5 rounded-lg border border-line px-3 py-2">
             <button
               onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, done: true })}
-              className="flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border-2 border-line hover:border-emerald-500 hover:bg-emerald-500/15"
+              className="group/done -m-1.5 shrink-0 p-1.5"
               title="Done"
-            />
+              aria-label="Mark done"
+            >
+              <span className="block h-4.5 w-4.5 rounded-full border-2 border-line group-hover/done:border-emerald-500 group-hover/done:bg-emerald-500/15" />
+            </button>
             <Bell size={14} className={DUE_TONE[d.tone]} />
             <span className="flex-1 truncate text-[13px]">{r.note || "Reminder"}</span>
             <span className={cx("text-xs", DUE_TONE[d.tone])}>{d.text}</span>
             <button
-              onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, due_at: inDays(1) })}
-              className="rounded px-1.5 text-xs text-muted hover:bg-panel-2 hover:text-fg"
-              title="Snooze to tomorrow"
+              onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, due_at: snoozed(r.due_at) })}
+              className="rounded px-1.5 py-1 text-xs text-muted hover:bg-panel-2 hover:text-fg"
+              title="Push back a day"
             >
               +1d
+            </button>
+            <button
+              onClick={() => act.deleteReminder.mutate({ id: opp.id, reminderId: r.id })}
+              className="rounded p-1 text-muted hover:bg-panel-2 hover:text-rose-500"
+              title="Remove reminder"
+              aria-label="Remove reminder"
+            >
+              <X size={13} />
             </button>
           </div>
         );
@@ -500,7 +551,16 @@ export function eventTitle(e: TimelineEvent, labels: (field: string, v: unknown)
       return "Reviewed";
     case "reminder": {
       const dueAt = e.changes?.due_at?.[1];
-      if (e.changes?.done_at) return <>Done: {e.body ?? "reminder"}</>;
+      if (e.changes?.deleted) return <>Removed reminder: {e.body ?? "reminder"}</>;
+      if (e.changes?.done_at) return e.changes.done_at[1] ? <>Done: {e.body ?? "reminder"}</> : <>Reopened: {e.body ?? "reminder"}</>;
+      if (e.changes?.due_at?.[0] != null)
+        return (
+          <>
+            Moved: {e.body ?? "reminder"}
+            {typeof dueAt === "string" && <span className="text-muted"> → {due(dueAt).text}</span>}
+          </>
+        );
+      if (e.changes?.note) return <>Reminder reworded: {e.body ?? "—"}</>;
       return (
         <>
           Reminder{e.body ? `: ${e.body}` : ""}
@@ -584,5 +644,9 @@ function Timeline({ events }: { events: TimelineEvent[] }) {
 
 export function useCopy() {
   const toast = useToast();
-  return (text: string, what = "Copied") => navigator.clipboard.writeText(text).then(() => toast.ok(what));
+  return (text: string, what = "Copied") =>
+    navigator.clipboard.writeText(text).then(
+      () => toast.ok(what),
+      () => toast.error("Couldn't copy — select the text and copy it by hand"),
+    );
 }

@@ -12,6 +12,7 @@ export type Meta = {
   activity_kinds: Option[];
   channel_by_host: Record<string, string>;
   timezone: string;
+  timezone_set: boolean;
   base_url: string;
 };
 

@@ -147,7 +147,8 @@ function ConnectAgents() {
         </div>
       </div>
 
-      <Modal open={!!created} onClose={() => setCreated(null)} title={`Key for “${created?.name}”`}>
+      {/* Not dismissable by a stray click or Esc: the key is shown exactly once. */}
+      <Modal open={!!created} onClose={() => setCreated(null)} title={`Key for “${created?.name}”`} dismissable={false}>
         <div className="space-y-3 p-5">
           <p className="text-[13px] text-muted">Copy it now — it won't be shown again.</p>
           <CopyLine text={created?.token ?? ""} label="Key copied" />
@@ -198,7 +199,9 @@ function Workspace() {
     onError: toast.error,
   });
   if (!meta) return null;
-  const options = (zones.includes(meta.timezone) ? zones : [meta.timezone, ...zones]).map((z) => ({ value: z, label: z.replace(/_/g, " ") }));
+  // Chrome's list has no plain "UTC"; offer it, and keep the current zone even if the list lacks it.
+  const all = ["UTC", ...zones.filter((z) => z !== "UTC")];
+  const options = (all.includes(meta.timezone) ? all : [meta.timezone, ...all]).map((z) => ({ value: z, label: z.replace(/_/g, " ") }));
   return (
     <Card icon={<Globe size={18} />} title="Timezone" sub="What “today” means for reminders and the agenda — for you and your agents.">
       <Select className="max-w-xs" value={meta.timezone} onChange={(v) => save.mutate(v)} options={options} />
@@ -245,8 +248,12 @@ function Account() {
           variant="ghost"
           className="ml-auto"
           onClick={async () => {
-            await api.post("/auth/logout");
-            location.assign("/login");
+            try {
+              await api.post("/auth/logout");
+              location.assign("/login");
+            } catch (e) {
+              toast.error(e);
+            }
           }}
         >
           <LogOut size={14} /> Log out

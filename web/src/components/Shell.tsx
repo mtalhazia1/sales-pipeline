@@ -23,7 +23,8 @@ export function Shell() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest?.("input,textarea,select,[contenteditable]");
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      const dialogOpen = document.querySelector("[role=dialog]:not([data-palette])");
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !dialogOpen) {
         e.preventDefault();
         setPalette((p) => !p);
         return;

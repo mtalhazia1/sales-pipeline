@@ -19,11 +19,24 @@ RestartSec=3
 # own user, read-only OS and code, writable only its own state dir, no access to /home, capped RAM.
 StateDirectory=sales-pipeline
 StateDirectoryMode=0700
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 MemoryMax=512M
+# Kernel-level extras: no outbound network (it only answers nginx on localhost), no devices, no privilege tricks.
+IPAddressDeny=any
+IPAddressAllow=localhost
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

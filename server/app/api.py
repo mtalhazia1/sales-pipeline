@@ -2,6 +2,7 @@
 API key as a bearer token (they are then recorded as that agent, like MCP calls)."""
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -45,11 +46,23 @@ def ctx(request: Request, s: Session = Depends(db)) -> Ctx:
     if not user:
         raise HTTPException(401, "Not logged in.")
     if request.method not in ("GET", "HEAD", "OPTIONS"):
-        # CSRF: the cookie is SameSite=Lax and mutations must come from our own origin.
+        # CSRF: the cookie is SameSite=Lax, and browsers send Origin on every mutation, so a present
+        # Origin must be exactly ours. (No Origin = not a browser page, e.g. scripts/smoke.py.)
         origin = request.headers.get("origin")
-        if origin and origin.rstrip("/") != config.BASE_URL and not origin.startswith("http://localhost"):
+        if origin and not _own_origin(origin):
             raise HTTPException(403, "Cross-origin request refused.")
     return Ctx(auth.human_actor(user), user)
+
+
+def _own_origin(origin: str) -> bool:
+    if origin.rstrip("/") == config.BASE_URL:
+        return True
+    # Local development only: the Vite dev server (another port) proxies to a loopback BASE_URL.
+    try:
+        host, base_host = urlsplit(origin).hostname, urlsplit(config.BASE_URL).hostname
+    except ValueError:
+        return False
+    return base_host in ("localhost", "127.0.0.1", "::1") and host in ("localhost", "127.0.0.1", "::1")
 
 
 def human(c: Ctx = Depends(ctx)) -> Ctx:
@@ -101,11 +114,12 @@ class PasswordIn(BaseModel):
 
 
 @router.post("/auth/password")
-def change_password(body: PasswordIn, c: Ctx = Depends(human), s: Session = Depends(db)):
+def change_password(body: PasswordIn, request: Request, c: Ctx = Depends(human), s: Session = Depends(db)):
     user = s.get(User, c.user.id)
     if not auth.verify_password(user, body.current):
         raise ServiceError("Current password is wrong.")
     user.password_hash = auth.hash_password(body.new)
+    auth.end_other_sessions(s, user, request.cookies.get(auth.SESSION_COOKIE))
     return {"ok": True}
 
 
@@ -113,7 +127,9 @@ def change_password(body: PasswordIn, c: Ctx = Depends(human), s: Session = Depe
 
 @router.get("/meta")
 def meta(c: Ctx = Depends(ctx), s: Session = Depends(db)):
-    return {**domain.meta(), "timezone": str(service.get_timezone(s)), "base_url": config.BASE_URL}
+    return {**domain.meta(), "timezone": str(service.get_timezone(s)), "base_url": config.BASE_URL,
+            # False until someone picks one — only then may the UI adopt the browser's zone.
+            "timezone_set": s.get(Setting, "timezone") is not None}
 
 
 class SettingsIn(BaseModel):
@@ -214,9 +230,13 @@ def review_one(opp_id: int, c: Ctx = Depends(human), s: Session = Depends(db)):
     return {"reviewed": service.mark_reviewed(s, c.actor, opp_id)}
 
 
+class ApproveIn(BaseModel):
+    ids: list[int] | None = None
+
+
 @router.post("/review/approve-all")
-def review_all(c: Ctx = Depends(human), s: Session = Depends(db)):
-    return {"reviewed": service.mark_reviewed(s, c.actor)}
+def review_all(body: ApproveIn, c: Ctx = Depends(human), s: Session = Depends(db)):
+    return {"reviewed": service.mark_reviewed(s, c.actor, ids=body.ids)}
 
 
 # ---------------------------------------------------------------- dashboards

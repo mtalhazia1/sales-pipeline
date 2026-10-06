@@ -12,17 +12,14 @@ render() { sed "s/__DOMAIN__/$DOMAIN/g; s/__PORT__/$PORT/g" "$1"; }
 PHASE=${1:-all}
 
 if [ "$PHASE" = app ] || [ "$PHASE" = all ]; then
-echo "→ user, dirs, units"
+echo "→ user, dirs"
 $SSH "sudo bash -s" <<REMOTE
 set -euo pipefail
 id -u $APP >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin $APP
 mkdir -p /srv/$APP /var/www/html
 REMOTE
-render deploy/$APP.service | $SSH "sudo tee /etc/systemd/system/$APP.service >/dev/null"
-render deploy/$APP-backup.service | $SSH "sudo tee /etc/systemd/system/$APP-backup.service >/dev/null"
-render deploy/$APP-backup.timer | $SSH "sudo tee /etc/systemd/system/$APP-backup.timer >/dev/null"
 
-echo "→ code + venv"
+echo "→ code, venv, units"
 bash deploy/deploy.sh --no-restart
 $SSH "sudo systemctl daemon-reload && sudo systemctl enable --now $APP $APP-backup.timer && sleep 2 && curl -fsS http://127.0.0.1:$PORT/healthz && echo"
 fi

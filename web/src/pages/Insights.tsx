@@ -4,7 +4,7 @@ import { api, type Funnel, type Stats } from "../lib/api";
 import { money, pct } from "../lib/format";
 import { STAGE_STYLE } from "../lib/meta";
 import { PageHeader } from "../components/Shell";
-import { Empty, PageLoading, Segmented, cx } from "../components/ui";
+import { Empty, PageError, PageLoading, Segmented, cx } from "../components/ui";
 
 const RANGES = [
   { value: "30", label: "30d" },
@@ -15,14 +15,16 @@ const RANGES = [
 
 export function Insights() {
   const [days, setDays] = useState("90");
-  const { data: s, isLoading } = useQuery({ queryKey: ["stats", days], queryFn: () => api.get<Stats>(`/stats?days=${days}`) });
+  const { data: s, isLoading, error, refetch } = useQuery({ queryKey: ["stats", days], queryFn: () => api.get<Stats>(`/stats?days=${days}`) });
 
   return (
     <>
       <PageHeader title="Insights" sub="Outbound funnel for everything you applied to in the window.">
         <Segmented value={days} onChange={setDays} options={RANGES} />
       </PageHeader>
-      {isLoading || !s ? (
+      {error && !s ? (
+        <PageError error={error} onRetry={refetch} />
+      ) : isLoading || !s ? (
         <PageLoading />
       ) : (
         <div className="space-y-6">

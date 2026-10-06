@@ -4,6 +4,7 @@ becomes the actor shown in the activity log."""
 
 import hashlib
 import secrets
+import threading
 import time
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -36,11 +37,19 @@ def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
 
-def verify_password(user: User, password: str) -> bool:
-    try:
-        return _hasher.verify(user.password_hash, password)
-    except VerificationError:
-        return False
+# Each argon2 check takes ~64 MB for ~70 ms. Two at a time keeps a burst of logins from pushing the
+# process past its memory cap (it would be OOM-killed); the rest wait their turn.
+_verify_slots = threading.BoundedSemaphore(2)
+# Unknown emails are checked against this, so a wrong email takes as long as a wrong password.
+_DUMMY_HASH = _hasher.hash(secrets.token_hex(16))
+
+
+def verify_password(user: User | None, password: str) -> bool:
+    with _verify_slots:
+        try:
+            return _hasher.verify(user.password_hash if user else _DUMMY_HASH, password) and user is not None
+        except VerificationError:
+            return False
 
 
 # Brute-force brake: 8 failed logins per IP per 15 minutes. One process, so memory is enough.
@@ -48,8 +57,11 @@ _failures: dict[str, deque] = defaultdict(deque)
 
 
 def check_login_allowed(ip: str) -> None:
+    now = time.time()
+    for key in [k for k, q in _failures.items() if not q or q[-1] < now - 900]:
+        _failures.pop(key, None)  # forget IPs with nothing recent, so the table can't grow forever
     q = _failures[ip]
-    while q and q[0] < time.time() - 900:
+    while q and q[0] < now - 900:
         q.popleft()
     if len(q) >= 8:
         raise ServiceError("Too many attempts — try again in 15 minutes.", 429)
@@ -57,10 +69,13 @@ def check_login_allowed(ip: str) -> None:
 
 def login(s: Session, email: str, password: str, ip: str) -> tuple[User, str]:
     check_login_allowed(ip)
+    # Counted before the (slow) check, so parallel guesses can't all slip in under the limit.
+    attempt = time.time()
+    _failures[ip].append(attempt)
     user = s.scalar(select(User).where(User.email == email.strip().lower()))
-    if not user or not verify_password(user, password):
-        _failures[ip].append(time.time())
+    if not verify_password(user, password):
         raise ServiceError("Wrong email or password.", 401)
+    _failures[ip].remove(attempt)
     token = secrets.token_urlsafe(32)
     s.add(WebSession(token_hash=sha256(token), user_id=user.id,
                      expires_at=utcnow() + timedelta(days=config.SESSION_DAYS)))
@@ -82,6 +97,14 @@ def user_for_session(s: Session, token: str | None) -> User | None:
 def logout(s: Session, token: str | None) -> None:
     if token and (row := s.get(WebSession, sha256(token))):
         s.delete(row)
+
+
+def end_other_sessions(s: Session, user: User, keep_token: str | None) -> None:
+    """After a password change, every other browser signed in as this user is signed out."""
+    keep = sha256(keep_token) if keep_token else None
+    for row in s.scalars(select(WebSession).where(WebSession.user_id == user.id)).all():
+        if row.token_hash != keep:
+            s.delete(row)
 
 
 def create_user(s: Session, email: str, name: str, password: str) -> User:

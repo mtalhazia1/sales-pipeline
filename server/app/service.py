@@ -2,7 +2,9 @@
 these functions, so both always behave identically — including the audit trail and the review
 flag: anything an agent writes is marked `needs_review` until a human looks at it."""
 
+import math
 import re
+import statistics
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -10,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import domain
@@ -47,7 +50,8 @@ ENUMS = {
     "stage": domain.STAGES, "lost_reason": domain.LOST_REASONS,
     "waiting_on": [("me", ""), ("client", "")],
 }
-TRACKING_PARAMS = re.compile(r"^(utm_.*|trk.*|ref|refid|referrer|source|src|fbclid|gclid|tracking.*|origin|lipi|mcid)$", re.I)
+# Only names that are never a posting's identity — `source`/`src`/`origin` are ids on some job boards.
+TRACKING_PARAMS = re.compile(r"^(utm_.*|trk.*|ref|refid|referrer|fbclid|gclid|tracking.*|lipi|mcid)$", re.I)
 
 
 def get_timezone(s: Session) -> ZoneInfo:
@@ -60,25 +64,39 @@ def get_timezone(s: Session) -> ZoneInfo:
 
 def url_key(url: str | None) -> str | None:
     """Canonical identity of a posting so the same job can't be added twice
-    (agents re-find the same posts constantly)."""
+    (agents re-find the same posts constantly). None = not a posting URL, so no dedup:
+    merging two different deals silently is worse than a visible duplicate."""
     if not url or not url.strip():
         return None
     raw = url.strip()
     if "://" not in raw:
         raw = "https://" + raw
-    parts = urlsplit(raw)
-    host = (parts.hostname or "").lower().removeprefix("www.")
+    try:
+        parts = urlsplit(raw)
+        host = (parts.hostname or "").lower().removeprefix("www.")
+        has_userinfo = parts.username is not None
+    except ValueError:
+        return None
+    # "N/A", an email address, "acme" — not a web address.
+    if parts.scheme not in ("http", "https") or "." not in host or has_userinfo or " " in raw:
+        return None
     path = parts.path.rstrip("/")
     query = dict(parse_qsl(parts.query))
-    if host.endswith("upwork.com") and (m := re.search(r"~0[0-9a-z]+", path, re.I)):
-        return f"upwork:{m.group(0).lower()}"
+    if host.endswith("upwork.com"):
+        m = re.search(r"~0[0-9a-z]+", path, re.I)
+        return f"upwork:{m.group(0).lower()}" if m else None
     if host.endswith("linkedin.com"):
         if m := re.search(r"/jobs/view/(?:[^/]*-)?(\d+)", path):
             return f"linkedin-job:{m.group(1)}"
         if query.get("currentJobId", "").isdigit():
             return f"linkedin-job:{query['currentJobId']}"
+        return None  # a profile, feed or search page is not a posting
     kept = sorted((k, v) for k, v in query.items() if not TRACKING_PARAMS.match(k))
-    return f"{host}{path}" + (f"?{urlencode(kept)}" if kept else "")
+    # Single-page career sites route by fragment (#/job/123); a plain #section anchor is not identity.
+    route = f"#{parts.fragment}" if parts.fragment.startswith(("/", "!/")) else ""
+    if not path and not kept and not route:
+        return None  # a bare homepage is shared by every deal at that company
+    return f"{host}{path}" + (f"?{urlencode(kept)}" if kept else "") + route
 
 
 def channel_for_url(url: str | None) -> str | None:
@@ -98,15 +116,21 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
     else:
         text = value.strip().replace("Z", "+00:00")
         try:
-            if len(text) == 10:
+            if re.fullmatch(r"\d{4}-?\d{2}-?\d{2}", text):
                 dt = datetime.combine(date.fromisoformat(text), time(default_hour))
             else:
                 dt = datetime.fromisoformat(text)
         except ValueError as e:
-            raise ServiceError(f"Couldn't read the date {value!r} — use YYYY-MM-DD or an ISO datetime.") from e
+            raise ServiceError(f"Couldn't read the date {value!r} — use YYYY-MM-DD or an ISO datetime "
+                               f"(today is {datetime.now(tz).date().isoformat()} in {tz}).") from e
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz)
     return dt.astimezone(UTC).replace(tzinfo=None)
+
+
+URL_FIELDS = ("application_url", "company_url", "contact_url")
+# Long enough for any real job post; bounded so one bad agent call can't store megabytes.
+MAX_LEN = {"description": 50_000, "notes": 20_000}
 
 
 def _clean(field: str, value: Any) -> Any:
@@ -114,6 +138,14 @@ def _clean(field: str, value: Any) -> Any:
         value = value.strip()
         if value == "" and field not in ("company",):
             value = None
+        elif len(value) > MAX_LEN.get(field, 1000):
+            raise ServiceError(f"{field} is too long (max {MAX_LEN.get(field, 1000):,} characters).")
+    if field in URL_FIELDS and value is not None:
+        # Rendered as links in the UI: web addresses only (no javascript:, data:, app-protocol handlers).
+        # "acme.com" and "localhost:8080/x" are fine (no scheme / a port), "javascript:…" is not.
+        scheme = re.match(r"^([a-z][a-z0-9+.-]*):(?!\d)", value, re.I)
+        if scheme and scheme.group(1).lower() not in ("http", "https"):
+            raise ServiceError(f"{field} must be a web address (https://…).")
     if value is None:
         if field in ("company", "kind", "channel", "network", "stage"):
             raise ServiceError(f"{field} can't be empty.")
@@ -124,19 +156,45 @@ def _clean(field: str, value: Any) -> Any:
     if field == "company" and not value:
         raise ServiceError("company can't be empty.")
     if field == "fit":
-        value = int(value)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            raise ServiceError("fit is a 1-5 score.") from None
         if not 1 <= value <= 5:
             raise ServiceError("fit is a 1-5 score.")
     if field == "value":
-        value = float(value)
-        if value < 0:
-            raise ServiceError("value can't be negative.")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ServiceError("value is a number in USD.") from None
+        if not math.isfinite(value) or value < 0:
+            raise ServiceError("value must be a positive number in USD.")
     if field == "inbound":
+        if isinstance(value, str):
+            if value.lower() not in ("true", "false", "1", "0", "yes", "no"):
+                raise ServiceError("inbound is true or false.")
+            value = value.lower() in ("true", "1", "yes")
         value = bool(value)
     return value
 
 
+def _milestone_rank(stage: str) -> int:
+    """How far along the milestone chain a stage is (-1 = none yet). Sending a Toptal profile to the
+    matcher is that channel's application, so it counts as applied in the funnel."""
+    stage = "applied" if stage == "matcher" else stage
+    return domain.MILESTONE_CHAIN.index(stage) if stage in domain.MILESTONE_CHAIN else -1
+
+
+def _rewind_milestones(opp: Opportunity, stage: str) -> None:
+    """Moving a deal back to an earlier open stage (a misdrag, or "that wasn't really a reply")
+    un-stamps the milestones past it — the stage is the truth, and Insights counts milestones."""
+    for m in domain.MILESTONE_CHAIN[_milestone_rank(stage) + 1:]:
+        setattr(opp, domain.MILESTONES[m], None)
+
+
 def _stamp_milestones(opp: Opportunity, stage: str, when: datetime) -> None:
+    if stage == "matcher" and opp.applied_at is None:
+        opp.applied_at = when
     if stage in domain.MILESTONE_CHAIN:
         for m in domain.MILESTONE_CHAIN[: domain.MILESTONE_CHAIN.index(stage) + 1]:
             attr = domain.MILESTONES[m]
@@ -266,14 +324,21 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
     if "company" not in values:
         raise ServiceError("company is required.")
     _check_stage(values["stage"], values["channel"])
+    _check_lost(values["stage"], values.get("lost_reason"))
     now = utcnow()
     opp = Opportunity(**values, url_key=url_key(values.get("application_url")), created_by=actor.name,
                       needs_review=actor.is_agent, created_at=now, updated_at=now, last_activity_at=now)
-    if opp.waiting_on is None and opp.stage in ("matcher", "applied", "proposal"):
-        opp.waiting_on = "client"
+    if opp.waiting_on is None:
+        opp.waiting_on = _default_waiting(opp.stage)
     _stamp_milestones(opp, opp.stage, now)
-    s.add(opp)
-    s.flush()
+    try:
+        with s.begin_nested():  # two agents adding the same posting at once: the loser gets the winner's row
+            s.add(opp)
+            s.flush()
+    except IntegrityError:
+        if existing := find_duplicate(s, data.get("application_url")):
+            return existing, False
+        raise
     _event(s, opp, actor, "created", None, {k: [None, v] for k, v in values.items()
                                             if k not in ("description", "notes")})
     if data.get("reminder_at"):
@@ -286,11 +351,27 @@ def _check_stage(stage: str, channel: str) -> None:
         raise ServiceError("'Sent to matcher' only applies to Toptal opportunities.")
 
 
+def _check_lost(stage: str, lost_reason: str | None) -> None:
+    # The reason is what makes "Lost" useful in Insights — ghosted, rejected and passed mean different fixes.
+    reasons = ", ".join(k for k, _ in domain.LOST_REASONS)
+    if stage == "lost" and not lost_reason:
+        raise ServiceError(f"Pass lost_reason with stage 'lost': {reasons}.")
+    if stage != "lost" and lost_reason:
+        raise ServiceError("lost_reason only applies together with stage 'lost'.")
+
+
+def _default_waiting(stage: str) -> str | None:
+    """Whose move a stage implies when nobody said: you've sent something → theirs; they replied → yours."""
+    return {"matcher": "client", "applied": "client", "proposal": "client", "replied": "me"}.get(stage)
+
+
 def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     opp = _get(s, opp_id)
     unknown = set(data) - EDITABLE
     if unknown:
         raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    derived = ("waiting_on", "lost_reason")
+    before = {k: getattr(opp, k) for k in derived}
     changes: dict[str, list] = {}
     for field, raw in data.items():
         new = _clean(field, raw)
@@ -303,24 +384,36 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
             mark_reviewed(s, actor, opp.id)
         return opp
     _check_stage(opp.stage, opp.channel)
+    if "stage" in changes and opp.stage != "lost" and "lost_reason" not in data:
+        opp.lost_reason = None  # reopening a lost deal drops its reason
+    if "stage" in changes or "lost_reason" in changes:  # older rows lost without a reason stay editable
+        _check_lost(opp.stage, opp.lost_reason)
     if "application_url" in changes:
         key = url_key(opp.application_url)
         dup = s.scalar(select(Opportunity).where(Opportunity.url_key == key, Opportunity.id != opp.id)) if key else None
         if dup:
             raise ServiceError(f"That URL is already opportunity #{dup.id} ({dup.company}).", 409)
         opp.url_key = key
+    closed_reminders = 0
     if "stage" in changes:
-        _stamp_milestones(opp, opp.stage, utcnow())
-        if opp.stage in ("applied", "matcher", "proposal") and "waiting_on" not in changes:
-            opp.waiting_on = "client"
-        if opp.stage == "lost" and not opp.lost_reason:
-            opp.lost_reason = "rejected"
-    if opp.stage != "lost":
-        opp.lost_reason = None
+        now = utcnow()
+        if opp.stage in domain.OPEN_STAGES:
+            _rewind_milestones(opp, opp.stage)
+        _stamp_milestones(opp, opp.stage, now)
+        if "waiting_on" not in changes and (wo := _default_waiting(opp.stage)):
+            opp.waiting_on = wo
+        if opp.stage == "lost":
+            # A dead deal's follow-ups would keep surfacing on Today; a won deal keeps its (kickoff, invoice…) reminders.
+            for r in opp.reminders:
+                if not r.done_at:
+                    r.done_at, closed_reminders = now, closed_reminders + 1
     # Field edits are bookkeeping; only a stage move counts as deal activity.
     _touch(opp, actor, activity="stage" in changes)
     # Long text fields are logged as "edited" rather than copied into the audit trail.
     logged = {k: ([None, "edited"] if k in ("description", "notes") else v) for k, v in changes.items()}
+    logged |= {k: [before[k], getattr(opp, k)] for k in derived if k not in logged and getattr(opp, k) != before[k]}
+    if closed_reminders:
+        logged["reminders_closed"] = [None, closed_reminders]
     _event(s, opp, actor, "updated", None, logged)
     return opp
 
@@ -340,25 +433,35 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
         raise ServiceError(f"kind must be one of: {', '.join(k for k, _ in domain.ACTIVITY_KINDS)}.")
     opp = _get(s, opp_id)
     when = parse_when(occurred_at, get_timezone(s)) or utcnow()
+    if when > utcnow() + timedelta(minutes=10):
+        raise ServiceError("occurred_at is in the future — log things when they happen. For a call that's booked "
+                           "for later, log kind='call' now and set_reminder for the call time.")
     order = domain.STAGE_ORDER
-    before = {"stage": opp.stage, "waiting_on": opp.waiting_on}
+    before = {"stage": opp.stage, "waiting_on": opp.waiting_on, "inbound": opp.inbound, "lost_reason": opp.lost_reason}
     if kind == "client_message":
         if opp.stage == "lead":
             opp.inbound = opp.inbound or opp.applied_at is None
-        if opp.stage == "lost" or order[opp.stage] < order["replied"]:
+        # A client writing back revives a deal that went silent — not one they rejected or you passed on
+        # ("thanks, we went with someone else" must not reopen it).
+        revive = opp.stage == "lost" and opp.lost_reason == "no_response"
+        if revive or (opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["replied"]):
             opp.stage = "replied"
-        if opp.stage != "won":
+        if opp.stage in domain.OPEN_STAGES:
             opp.waiting_on = "me"
     elif kind == "my_message":
         if opp.stage == "lead":
             opp.stage = "applied"
-        if opp.stage not in domain.CLOSED_STAGES:
+        if opp.stage in domain.OPEN_STAGES:
             opp.waiting_on = "client"
     elif kind == "call":
         if opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["call"]:
             opp.stage = "call"
     if opp.stage != before["stage"]:
         _stamp_milestones(opp, opp.stage, when)
+    # Back-filled history: an earlier piece of evidence moves its milestone earlier.
+    milestone = {"my_message": "applied_at", "client_message": "replied_at", "call": "call_at"}.get(kind)
+    if milestone and (stamped := getattr(opp, milestone)) and when < stamped:
+        setattr(opp, milestone, when)
     changes = {k: [v, getattr(opp, k)] for k, v in before.items() if getattr(opp, k) != v}
     _touch(opp, actor, activity=False)
     if kind != "note":  # a note is bookkeeping, not contact with the client
@@ -367,10 +470,12 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     return opp
 
 
-def mark_reviewed(s: Session, actor: Actor, opp_id: int | None = None) -> int:
+def mark_reviewed(s: Session, actor: Actor, opp_id: int | None = None, ids: list[int] | None = None) -> int:
     q = select(Opportunity).where(Opportunity.needs_review.is_(True), Opportunity.archived_at.is_(None))
     if opp_id is not None:
         q = q.where(Opportunity.id == opp_id)
+    if ids is not None:  # only what the reviewer actually saw — not whatever an agent added since
+        q = q.where(Opportunity.id.in_(ids))
     opps = s.scalars(q).all()
     for opp in opps:
         opp.needs_review = False
@@ -382,11 +487,15 @@ def search(s: Session, *, q: str | None = None, stage: list[str] | None = None, 
            network: str | None = None, kind: str | None = None, waiting_on: str | None = None,
            needs_review: bool | None = None, include_closed: bool = True, limit: int = 500) -> list[Opportunity]:
     stmt = select(Opportunity).where(Opportunity.archived_at.is_(None))
-    if q:
+    if q and q.strip():
         like = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Opportunity.company.ilike(like), Opportunity.title.ilike(like),
-                              Opportunity.contact_name.ilike(like), Opportunity.notes.ilike(like),
-                              Opportunity.application_url.ilike(like), Opportunity.contact_email.ilike(like)))
+        matches = [Opportunity.company.ilike(like), Opportunity.title.ilike(like),
+                   Opportunity.contact_name.ilike(like), Opportunity.notes.ilike(like),
+                   Opportunity.description.ilike(like), Opportunity.application_url.ilike(like),
+                   Opportunity.contact_email.ilike(like)]
+        if "/" in q and (key := url_key(q)):  # any form of a posting's URL finds it
+            matches.append(Opportunity.url_key == key)
+        stmt = stmt.where(or_(*matches))
     if stage:
         stmt = stmt.where(Opportunity.stage.in_(stage))
     elif not include_closed:
@@ -421,15 +530,19 @@ def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | 
     r = s.get(Reminder, reminder_id)
     if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
-    if done is not None:
+    changes: dict[str, list] = {}
+    if done is not None and bool(r.done_at) != done:  # repeating "done" is a no-op, not a second event
         r.done_at = utcnow() if done else None
-        if done:
-            _event(s, r.opportunity, actor, "reminder", r.note or None, {"done_at": [None, iso(r.done_at)]})
-    if due:
-        r.due_at = parse_when(due, get_timezone(s))
-    if note is not None:
+        changes["done_at"] = [None, iso(r.done_at)] if done else ["done", None]
+    if due and (new_due := parse_when(due, get_timezone(s))) != r.due_at:
+        changes["due_at"] = [iso(r.due_at), iso(new_due)]
+        r.due_at = new_due
+    if note is not None and note.strip()[:500] != r.note:
+        changes["note"] = [r.note or None, note.strip()[:500] or None]
         r.note = note.strip()[:500]
-    _touch(r.opportunity, actor, activity=False)
+    if changes:
+        _touch(r.opportunity, actor, activity=False)
+        _event(s, r.opportunity, actor, "reminder", r.note or None, changes)
     return r
 
 
@@ -437,6 +550,8 @@ def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
     r = s.get(Reminder, reminder_id)
     if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
+    _touch(r.opportunity, actor, activity=False)
+    _event(s, r.opportunity, actor, "reminder", r.note or None, {"deleted": [iso(r.due_at), None]})
     s.delete(r)
 
 
@@ -515,7 +630,7 @@ def stats(s: Session, days: int | None = 90) -> dict:
             "won_value": sum(o.value or 0 for o in won),
             "reply_rate": round(replied / n, 3) if n else None,
             "win_rate": round(sum(1 for o in out if o.stage == "won") / n, 3) if n else None,
-            "median_days_to_reply": round(reply_days[len(reply_days) // 2], 1) if reply_days else None,
+            "median_days_to_reply": round(statistics.median(reply_days), 1) if reply_days else None,
             "inbound": sum(1 for o in rows if o.inbound),
         }
 
@@ -549,8 +664,10 @@ def stats(s: Session, days: int | None = 90) -> dict:
         "by_channel": grouped("channel", domain.CHANNELS),
         "by_network": grouped("network", domain.NETWORKS),
         "by_kind": grouped("kind", domain.KINDS),
+        # Every deal that died in the window, including leads you passed on — not just the applied cohort.
         "lost_reasons": [{"key": k, "label": lbl, "count": n} for k, lbl in domain.LOST_REASONS
-                         if (n := sum(1 for o in cohort if o.stage == "lost" and o.lost_reason == k))],
+                         if (n := sum(1 for o in all_opps if o.stage == "lost" and o.lost_reason == k
+                                      and o.closed_at and o.closed_at >= since))],
         "open_by_stage": [{"stage": k, "label": lbl, "count": sum(1 for o in open_opps if o.stage == k),
                            "value": sum(o.value or 0 for o in open_opps if o.stage == k)}
                           for k, lbl in domain.STAGES if k in domain.OPEN_STAGES],
@@ -561,7 +678,7 @@ def stats(s: Session, days: int | None = 90) -> dict:
 def activity_feed(s: Session, *, limit: int = 100, actor_type: str | None = None, before_id: int | None = None) -> list[dict]:
     stmt = (select(Event, Opportunity).join(Opportunity, Event.opportunity_id == Opportunity.id)
             .where(Opportunity.archived_at.is_(None))
-            .order_by(Event.id.desc()).limit(min(limit, 300)))
+            .order_by(Event.id.desc()).limit(max(1, min(limit, 300))))
     if actor_type:
         stmt = stmt.where(Event.actor_type == actor_type)
     if before_id:

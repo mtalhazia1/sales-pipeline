@@ -1,18 +1,38 @@
 import type { ReactNode } from "react";
 import { Bell, Check, Clock, PartyPopper, Send, Sparkles, X } from "lucide-react";
 import { useNavigate } from "react-router";
-import type { AgendaReminder } from "../lib/api";
-import { due, inDays } from "../lib/format";
+import type { AgendaReminder, Summary } from "../lib/api";
+import { due, inDays, snoozed } from "../lib/format";
 import { useAgenda, useOppActions } from "../lib/hooks";
 import { OppRow, DUE_TONE } from "../components/OppRow";
 import { PageHeader } from "../components/Shell";
-import { Button, Empty, PageLoading, cx } from "../components/ui";
+import { Button, Empty, PageError, PageLoading, cx, useToast } from "../components/ui";
 
 export function Today() {
-  const { data: a, isLoading } = useAgenda();
+  const { data: a, isLoading, error, refetch } = useAgenda();
   const act = useOppActions();
+  const toast = useToast();
   const nav = useNavigate();
+  if (error && !a) return <PageError error={error} onRetry={refetch} />;
   if (isLoading || !a) return <PageLoading />;
+  const busy = act.update.isPending || act.log.isPending || act.remind.isPending;
+
+  // Triage is one click, so every outcome says what happened and can be taken back.
+  const move = async (o: Summary, patch: Record<string, unknown>, said: string, followUpDays?: number) => {
+    try {
+      await act.update.mutateAsync({ id: o.id, ...patch });
+      const r = followUpDays ? await act.remind.mutateAsync({ id: o.id, due_at: inDays(followUpDays), note: "Follow up if no reply" }) : null;
+      toast.ok(said, {
+        label: "Undo",
+        run: () => {
+          act.update.mutate({ id: o.id, stage: o.stage });
+          if (r) act.deleteReminder.mutate({ id: o.id, reminderId: r.id });
+        },
+      });
+    } catch {
+      // the mutation already showed the error
+    }
+  };
 
   const total = a.due_reminders.length + a.your_move.length + a.gone_quiet.length;
   const date = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
@@ -45,8 +65,8 @@ export function Today() {
                 key={o.id}
                 opp={o}
                 right={
-                  <Button size="sm" onClick={() => act.log.mutate({ id: o.id, kind: "my_message", body: "Replied" })} title="Mark that you replied">
-                    <Check size={14} /> Replied
+                  <Button size="sm" disabled={busy} onClick={() => act.log.mutate({ id: o.id, kind: "my_message", body: "Replied" })} title="Mark that you replied — it becomes their move">
+                    <Check size={14} /> I replied
                   </Button>
                 }
               />
@@ -63,10 +83,17 @@ export function Today() {
                 meta={<span className="text-rose-600/80 dark:text-rose-300/80">{o.idle_days}d silent</span>}
                 right={
                   <>
-                    <Button size="sm" onClick={() => act.remind.mutate({ id: o.id, due_at: inDays(0), note: "Send a follow-up" })} title="Add a follow-up for today">
+                    <Button size="sm" disabled={busy} onClick={() => act.remind.mutate({ id: o.id, due_at: inDays(0), note: "Send a follow-up" })} title="Add a follow-up for today">
                       Follow up
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => act.update.mutate({ id: o.id, stage: "lost", lost_reason: "no_response" })} title="Mark lost — no response">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => move(o, { stage: "lost", lost_reason: "no_response" }, `${o.company} marked lost — no response`)}
+                      title="Let it go — mark lost, no response"
+                      aria-label="Mark lost, no response"
+                    >
                       <X size={14} />
                     </Button>
                   </>
@@ -91,10 +118,15 @@ export function Today() {
                 showStage={false}
                 right={
                   <>
-                    <Button size="sm" onClick={() => act.update.mutate({ id: o.id, stage: o.channel === "toptal" ? "matcher" : "applied" })} title="I applied">
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => move(o, { stage: o.channel === "toptal" ? "matcher" : "applied" }, `Applied to ${o.company} — follow-up in 3 days`, 3)}
+                      title="I applied (adds a 3-day follow-up)"
+                    >
                       <Check size={14} /> Applied
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => act.update.mutate({ id: o.id, stage: "lost", lost_reason: "declined" })} title="Pass on this one">
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => move(o, { stage: "lost", lost_reason: "declined" }, `Passed on ${o.company}`)} title="Pass on this one">
                       Pass
                     </Button>
                   </>
@@ -145,7 +177,9 @@ function Block({ title, hint, icon, count, accent, muted, children }: {
 
 function ReminderRow({ r }: { r: AgendaReminder }) {
   const act = useOppActions();
+  const toast = useToast();
   const d = due(r.due_at);
+  const busy = act.reminder.isPending;
   return (
     <OppRow
       opp={r.opportunity}
@@ -157,10 +191,20 @@ function ReminderRow({ r }: { r: AgendaReminder }) {
       }
       right={
         <>
-          <Button size="sm" onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, done: true })} title="Done">
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() =>
+              act.reminder.mutate(
+                { id: r.opportunity_id, reminderId: r.id, done: true },
+                { onSuccess: () => toast.ok("Done", { label: "Undo", run: () => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, done: false }) }) },
+              )
+            }
+            title="Done"
+          >
             <Check size={14} /> Done
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, due_at: inDays(1) })} title="Snooze until tomorrow">
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, due_at: snoozed(r.due_at) })} title="Push back a day">
             +1d
           </Button>
         </>

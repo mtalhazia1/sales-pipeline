@@ -60,6 +60,20 @@ export function toLocalDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** "+1d" on a reminder: an overdue one moves to tomorrow (09:00), a future one a day later — never earlier. */
+export function snoozed(dueIso: string): string {
+  const t = new Date(dueIso).getTime();
+  return t <= Date.now() ? inDays(1) : new Date(t + DAY).toISOString();
+}
+
+/** "8000", "$8,000", "8k", "1.5M", "8000 USD" → 8000; null when it isn't a number. */
+export function parseMoney(text: string): number | null {
+  const m = text.replace(/[$,\s]|usd/gi, "").match(/^(\d+(?:\.\d+)?)([km]?)$/i);
+  if (!m) return null;
+  const unit: Record<string, number> = { "": 1, k: 1e3, m: 1e6 };
+  return Number(m[1]) * unit[m[2].toLowerCase()];
+}
+
 /** Next Monday (or the Monday after if today is Monday). */
 export function nextMonday(): string {
   const d = new Date();
@@ -76,6 +90,7 @@ export function hostOf(url: string | null | undefined): string {
   }
 }
 
+/** A clickable web link — anything that isn't http(s) is treated as a host name, never as another scheme. */
 export function href(url: string): string {
-  return url.includes("://") ? url : `https://${url}`;
+  return /^https?:\/\//i.test(url) ? url : `https://${url.replace(/^[a-z][a-z0-9+.-]*:(?!\d)\/*/i, "")}`;
 }

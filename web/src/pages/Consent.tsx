@@ -16,13 +16,19 @@ export function Consent() {
     retry: false,
   });
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const answer = async (allow: boolean) => {
     setBusy(true);
-    const r = await api.post<{ redirect_to: string }>(`/oauth/requests/${encodeURIComponent(id)}`, { allow });
-    // The server only issues vetted redirect URIs; refuse script-capable schemes here as well.
-    const scheme = r.redirect_to.split(":")[0].toLowerCase();
-    if (["javascript", "data", "vbscript", "blob", "file", "about"].includes(scheme)) throw new Error("Unsafe redirect");
-    location.assign(r.redirect_to);
+    try {
+      const r = await api.post<{ redirect_to: string }>(`/oauth/requests/${encodeURIComponent(id)}`, { allow });
+      // The server only issues vetted redirect URIs; refuse script-capable schemes here as well.
+      const scheme = r.redirect_to.split(":")[0].toLowerCase();
+      if (["javascript", "data", "vbscript", "blob", "file", "about"].includes(scheme)) throw new Error("Unsafe redirect — not followed");
+      location.assign(r.redirect_to);
+    } catch (e) {
+      // Most often the request expired (10 minutes): connecting again from the app starts a fresh one.
+      setFailed(`${e instanceof Error ? e.message : "Something went wrong"}. Start the connection again from the app.`);
+    }
   };
 
   return (
@@ -47,6 +53,7 @@ export function Consent() {
             <div className="mt-4 flex items-center gap-2 rounded-lg bg-panel-2 px-3 py-2 text-[13px] text-muted">
               <ShieldCheck size={15} /> Returns to <span className="font-medium text-fg">{data.redirect_host}</span>
             </div>
+            {failed && <p className="mt-4 text-[13px] text-rose-600 dark:text-rose-300">{failed}</p>}
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="ghost" disabled={busy} onClick={() => answer(false)}>
                 Deny

@@ -8,7 +8,6 @@ Creates records named "Smoke Test …" and deletes them at the end."""
 import asyncio
 import base64
 import hashlib
-import json
 import secrets
 import sys
 from urllib.parse import parse_qs, urlsplit
@@ -28,7 +27,10 @@ URLS: dict[int, str] = {}
 def structured(result):
     if result.is_error:
         raise RuntimeError(result.content[0].text)
-    return result.structured_content if result.structured_content is not None else json.loads(result.content[0].text)
+    # Agents must get JSON objects, not a text blob: a bare `-> dict` tool annotation silently drops them.
+    if result.structured_content is None:
+        raise RuntimeError("tool returned no structuredContent")
+    return result.structured_content
 
 
 async def mcp_calls(token: str, mode: str) -> list[int]:
@@ -53,6 +55,11 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         ok(r4["stage"] == "replied" and r4["waiting_on"] == "me", f"[{mode}] client_message: →replied, your move")
         bad = await c.call_tool("update_opportunity", {"opportunity_id": opp["id"], "stage": "matcher"})
         ok(bad.is_error and "Toptal" in bad.content[0].text, f"[{mode}] matcher refused for non-Toptal")
+        bad = await c.call_tool("update_opportunity", {"opportunity_id": opp["id"], "stage": "lost"})
+        ok(bad.is_error and "lost_reason" in bad.content[0].text, f"[{mode}] lost without a reason refused")
+        rem_id = structured(await c.call_tool("get_opportunity", {"opportunity_id": opp["id"]}))["reminders"][0]["id"]
+        moved = structured(await c.call_tool("update_reminder", {"reminder_id": rem_id, "due": "2030-01-05"}))
+        ok(moved["due_at"].startswith("2030-01-0"), f"[{mode}] update_reminder reschedules")
         ag = structured(await c.call_tool("get_agenda", {}))
         ok(any(o["id"] == opp["id"] for o in ag["your_move"]), f"[{mode}] agenda: shows under your move")
         st = structured(await c.call_tool("pipeline_stats", {"days": 30}))

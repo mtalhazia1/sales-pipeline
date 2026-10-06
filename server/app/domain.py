@@ -72,7 +72,8 @@ MILESTONES = {"applied": "applied_at", "replied": "replied_at", "call": "call_at
 MILESTONE_CHAIN = ["applied", "replied", "call", "proposal"]
 
 # Days without activity before an open deal with no scheduled reminder is flagged "gone quiet".
-QUIET_AFTER_DAYS = {"lead": 3, "matcher": 7, "applied": 5, "replied": 2, "call": 2, "proposal": 3}
+# (Leads are never "quiet" — nothing has been sent yet; they wait in New leads.)
+QUIET_AFTER_DAYS = {"matcher": 7, "applied": 5, "replied": 2, "call": 2, "proposal": 3}
 
 # Hostnames → channel, so a pasted URL fills the channel by itself.
 CHANNEL_BY_HOST = {

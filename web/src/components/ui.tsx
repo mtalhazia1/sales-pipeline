@@ -6,6 +6,21 @@ export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
 
+/** Props that make a clickable row/card reachable by keyboard (Tab, then Enter or Space). */
+export function pressable(onPress: () => void) {
+  return {
+    role: "button",
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        onPress();
+      }
+    },
+  };
+}
+
 type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "ghost" | "soft" | "danger";
   size?: "sm" | "md";
@@ -104,24 +119,42 @@ export function PageLoading() {
   );
 }
 
+/** A page's data request failed (network drop, server restarting) — say so and offer a retry. */
+export function PageError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div className="flex h-60 flex-col items-center justify-center gap-3 text-center">
+      <div className="text-[14px] text-muted">Couldn't load this — {error instanceof Error ? error.message : "network error"}.</div>
+      <Button size="sm" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- modal
 
-export function Modal({ open, onClose, title, children, width = "max-w-lg" }: {
+export function Modal({ open, onClose, title, children, width = "max-w-lg", dismissable = true }: {
   open: boolean;
   onClose: () => void;
   title?: ReactNode;
   children: ReactNode;
   width?: string;
+  /** false = only the explicit close button closes it (e.g. a secret shown once). */
+  dismissable?: boolean;
 }) {
   useEffect(() => {
-    if (!open) return;
+    if (!open || !dismissable) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, dismissable]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[10vh] backdrop-blur-[2px]" onMouseDown={onClose}>
+    // Scrolls when the dialog is taller than the screen (a phone with the keyboard up).
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-[10vh] backdrop-blur-[2px]"
+      onMouseDown={dismissable ? onClose : undefined}
+    >
       <div
         role="dialog"
         aria-modal="true"

@@ -7,7 +7,8 @@ import { useDrawer, useOppActions, useOpportunities } from "../lib/hooks";
 import { OppRow } from "../components/OppRow";
 import { PageHeader } from "../components/Shell";
 import { eventTitle, useChangeLabels } from "../components/Drawer";
-import { Button, Empty, PageLoading, Segmented, cx } from "../components/ui";
+import { Button, Empty, PageError, PageLoading, Segmented, cx } from "../components/ui";
+import { useConfirm } from "../components/confirm";
 
 /** Agents do the data entry; this is where a human keeps an eye on them. */
 export function Review() {
@@ -44,10 +45,12 @@ function useFeed(actorType?: string) {
 }
 
 function NeedsReview() {
-  const { data: opps, isLoading } = useOpportunities({ needs_review: "true" });
+  const { data: opps, isLoading, error, refetch } = useOpportunities({ needs_review: "true" });
   const { data: feed } = useFeed("agent");
   const act = useOppActions();
   const labels = useChangeLabels();
+  const confirm = useConfirm();
+  if (error && !opps) return <PageError error={error} onRetry={refetch} />;
   if (isLoading || !opps) return <PageLoading />;
   if (!opps.length)
     return (
@@ -59,7 +62,14 @@ function NeedsReview() {
     <>
       <div className="mb-3 flex items-center justify-between">
         <span className="text-[13px] text-muted">{opps.length} to review</span>
-        <Button size="sm" onClick={() => act.reviewAll.mutate()}>
+        <Button
+          size="sm"
+          disabled={act.reviewAll.isPending}
+          onClick={async () =>
+            (await confirm({ title: `Approve all ${opps.length}?`, body: "Marks the deals listed here as reviewed. Anything an agent adds after this page loaded stays in the queue.", confirm: "Approve all" })) &&
+            act.reviewAll.mutate({ ids: opps.map((o) => o.id) })
+          }
+        >
           <CheckCheck size={14} /> Approve all
         </Button>
       </div>
@@ -102,7 +112,7 @@ function NeedsReview() {
 function Activity() {
   const [who, setWho] = useSearchParams();
   const actor = who.get("who") || "";
-  const { data: feed, isLoading } = useFeed(actor || undefined);
+  const { data: feed, isLoading, error, refetch } = useFeed(actor || undefined);
   const drawer = useDrawer();
   const labels = useChangeLabels();
   return (
@@ -124,7 +134,9 @@ function Activity() {
           ]}
         />
       </div>
-      {isLoading || !feed ? (
+      {error && !feed ? (
+        <PageError error={error} onRetry={refetch} />
+      ) : isLoading || !feed ? (
         <PageLoading />
       ) : !feed.length ? (
         <Empty title="No activity yet" />

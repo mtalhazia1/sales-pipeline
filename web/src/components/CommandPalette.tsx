@@ -12,7 +12,7 @@ export function CommandPalette({ open, onClose, onNew }: { open: boolean; onClos
   const [sel, setSel] = useState(0);
   const nav = useNavigate();
   const drawer = useDrawer();
-  const { data: opps } = useOpportunities();
+  const { data: opps } = useOpportunities({}, open); // only fetched while the palette is open
 
   useEffect(() => {
     if (open) {
@@ -62,7 +62,7 @@ export function CommandPalette({ open, onClose, onNew }: { open: boolean; onClos
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[12vh] backdrop-blur-[2px]" onMouseDown={onClose}>
-      <div role="dialog" aria-modal="true" className="anim-pop w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+      <div role="dialog" data-palette aria-modal="true" className="anim-pop w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-2 border-b border-line px-4">
           <Search size={16} className="text-muted" />
           <input

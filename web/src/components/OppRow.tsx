@@ -4,7 +4,7 @@ import type { Summary } from "../lib/api";
 import { ago, due, money } from "../lib/format";
 import { labelOf, useMeta } from "../lib/meta";
 import { useDrawer } from "../lib/hooks";
-import { Chip, Fit, StagePill, YourMove, cx } from "./ui";
+import { Chip, Fit, StagePill, YourMove, cx, pressable } from "./ui";
 
 export const DUE_TONE = {
   overdue: "text-rose-600 dark:text-rose-400",
@@ -26,8 +26,8 @@ export function OppRow({ opp, right, meta: extra, showStage = true, showNext = t
   const rem = showNext && opp.next_reminder ? due(opp.next_reminder.due_at) : null;
   return (
     <div
-      className="group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition hover:bg-panel-2"
-      onClick={() => drawer.open(opp.id)}
+      className="group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition outline-none hover:bg-panel-2 focus-visible:ring-2 focus-visible:ring-accent"
+      {...pressable(() => drawer.open(opp.id))}
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -47,6 +47,13 @@ export function OppRow({ opp, right, meta: extra, showStage = true, showNext = t
           {(opp.value || opp.budget) && <span>{opp.value ? money(opp.value) : opp.budget}</span>}
           {opp.fit && <Fit value={opp.fit} />}
           {extra}
+          {/* phones: the stage and next step live here, the right-hand column is hidden */}
+          {showStage && <StagePill stage={opp.stage} className="sm:hidden" />}
+          {rem && (
+            <span className={cx("inline-flex items-center gap-1 text-xs sm:hidden", DUE_TONE[rem.tone])}>
+              <Bell size={11} /> {rem.text}
+            </span>
+          )}
         </div>
       </div>
       <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">

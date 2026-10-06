@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type User } from "./lib/api";
 import { useMeta } from "./lib/meta";
 import { Shell } from "./components/Shell";
-import { PageLoading } from "./components/ui";
+import { PageError, PageLoading } from "./components/ui";
 import { Today } from "./pages/Today";
 import { Pipeline } from "./pages/Pipeline";
 import { Review } from "./pages/Review";
@@ -31,18 +31,20 @@ export function App() {
 }
 
 function Authed({ children }: { children: React.ReactNode }) {
-  const { data: me, isLoading } = useQuery({ queryKey: ["me"], queryFn: () => api.get<User>("/auth/me"), retry: false });
+  const { data: me, isLoading, error, refetch } = useQuery({ queryKey: ["me"], queryFn: () => api.get<User>("/auth/me"), retry: false });
   const { data: meta } = useMeta();
   const qc = useQueryClient();
 
-  // First run: adopt the browser's timezone so "today" means the owner's today.
+  // First run only: adopt the browser's timezone so "today" means the owner's today. Once a zone is
+  // stored (even a deliberate UTC) it is never overwritten from here.
   useEffect(() => {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (meta && meta.timezone === "UTC" && tz && tz !== "UTC") {
+    if (meta && !meta.timezone_set && tz) {
       api.patch("/settings", { timezone: tz }).then(() => qc.invalidateQueries());
     }
   }, [meta, qc]);
 
+  if (error && !me) return <PageError error={error} onRetry={refetch} />; // a 401 has already redirected to /login
   if (isLoading || !me) return <PageLoading />;
   return <>{children}</>;
 }

@@ -12,13 +12,14 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     RefreshToken,
     RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app import config
 from app.auth import new_token, sha256, token_row
@@ -28,8 +29,14 @@ from app.service import ServiceError
 
 SCOPE = "sales"
 # Pending consent requests live in memory for 10 minutes (single process; a restart just means
-# the person clicks "connect" again).
+# the person clicks "connect" again). Capped, so anonymous /authorize calls can't fill the RAM.
 _pending: dict[str, tuple[float, str, AuthorizationParams]] = {}
+MAX_PENDING = 100
+# Registration is open and anonymous (that's how MCP clients connect), so what it stores is bounded:
+# only the fields we use, short, and a limit on how many clients can be registered per day.
+MAX_NEW_CLIENTS_PER_DAY = 50
+_KEEP_CLIENT_FIELDS = {"client_id", "client_secret", "client_id_issued_at", "client_secret_expires_at", "redirect_uris",
+                       "token_endpoint_auth_method", "grant_types", "response_types", "client_name", "client_uri", "scope"}
 
 
 _BLOCKED_SCHEMES = {"javascript", "data", "vbscript", "blob", "file", "about"}
@@ -58,16 +65,32 @@ class Provider:
             return OAuthClientInformationFull.model_validate(row.info) if row else None
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        for uri in client_info.redirect_uris or []:
+        uris = client_info.redirect_uris or []
+        if len(uris) > 10 or any(len(str(u)) > 500 for u in uris):
+            raise RegistrationError("invalid_redirect_uri", "At most 10 redirect URIs of up to 500 characters.")
+        for uri in uris:
             if not _safe_redirect(str(uri)):
                 raise RegistrationError("invalid_redirect_uri", f"Redirect URI not allowed: {uri}")
+        info = {k: v for k, v in client_info.model_dump(mode="json").items() if k in _KEEP_CLIENT_FIELDS}
+        info["client_name"] = _client_name(client_info)
+        if info.get("client_uri") and len(info["client_uri"]) > 300:
+            info["client_uri"] = None
+        if info.get("scope") and len(info["scope"]) > 100:
+            raise RegistrationError("invalid_client_metadata", "Scope too long.")
         with session_scope() as s:
-            s.merge(OAuthClient(client_id=client_info.client_id, info=client_info.model_dump(mode="json")))
+            recent = s.scalar(select(func.count()).select_from(OAuthClient).where(OAuthClient.created_at > utcnow() - timedelta(days=1)))
+            if recent >= MAX_NEW_CLIENTS_PER_DAY:
+                raise RegistrationError("invalid_client_metadata", "Too many new clients today — try again tomorrow.")
+            s.merge(OAuthClient(client_id=client_info.client_id, info=info))
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        if len(params.state or "") > 500 or len(params.code_challenge) > 128 or len(params.resource or "") > 500:
+            raise AuthorizeError("invalid_request", "state, code_challenge or resource is too long.")
         now = time.time()
         for key in [k for k, (ts, _, _) in _pending.items() if ts < now - 600]:
             _pending.pop(key, None)
+        if len(_pending) >= MAX_PENDING:
+            raise AuthorizeError("temporarily_unavailable", "Too many connection requests in progress — try again in a few minutes.")
         request_id = secrets.token_urlsafe(24)
         _pending[request_id] = (now, client.client_id, params)
         return f"{config.BASE_URL}/oauth/consent?request={request_id}"

@@ -7,7 +7,7 @@ the same pattern so they cannot interfere with each other, and so the next proje
 |---|---|---|
 | Linux user | own system user, no login, no home | `sales-pipeline` |
 | Code | `/srv/<app>/` owned by root — the app can't modify its own code | `/srv/sales-pipeline` |
-| Data | `/var/lib/<app>/` (systemd `StateDirectory`, mode 0700) — the only writable path | SQLite at `/var/lib/sales-pipeline/sales.db` |
+| Data | `/var/lib/<app>/` (systemd `StateDirectory`, mode 0700, `UMask=0077`) — the only writable path. **Every** unit that names the StateDirectory must set the same mode: systemd re-applies it on each start (a backup unit without it reset the dir to 0755) | SQLite at `/var/lib/sales-pipeline/sales.db` |
 | Process | own systemd unit: `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, `MemoryMax` | `sales-pipeline.service` |
 | Network | binds `127.0.0.1:<port>` only; public traffic via its own nginx site file + its own LE cert | port 8100, `sales.<domain>` |
 | Secrets | none shared; each app keeps its own | none needed (no external APIs) |
@@ -36,8 +36,9 @@ database server, no shared users, no shared secrets.
 
 ## Every deploy
 
-`bash deploy/deploy.sh` — builds the UI locally, rsyncs code, installs Python deps, restarts (Alembic
-migrations run on start), health-checks. Config (host, key, domain, port) lives in `deploy/config.sh`.
+`bash deploy/deploy.sh` — builds the UI locally, rsyncs code, re-installs the systemd units and the nginx
+site from the repo (a site file that fails `nginx -t` is rolled back — nginx is shared), installs Python
+deps, restarts (Alembic migrations run on start), health-checks. The server never drifts from the repo. Config (host, key, domain, port) lives in `deploy/config.sh`.
 
 ## Operating
 

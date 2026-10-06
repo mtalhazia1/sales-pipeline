@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { ArrowDown, ArrowUp, Bell, Columns3, Inbox, List, Search } from "lucide-react";
 import type { Summary } from "../lib/api";
@@ -7,7 +7,7 @@ import { STAGE_STYLE, labelOf, useMeta } from "../lib/meta";
 import { useDrawer, useOppActions, useOpportunities } from "../lib/hooks";
 import { PageHeader } from "../components/Shell";
 import { DUE_TONE, OppRow } from "../components/OppRow";
-import { Button, Chip, Empty, Fit, Modal, PageLoading, Segmented, Select, StagePill, YourMove, cx } from "../components/ui";
+import { Button, Chip, Empty, Fit, Modal, PageError, PageLoading, Segmented, Select, StagePill, YourMove, cx, pressable, useToast } from "../components/ui";
 
 export function Pipeline() {
   const { data: meta } = useMeta();
@@ -21,13 +21,24 @@ export function Pipeline() {
     kind: params.get("kind") ?? "",
     stage: params.get("stage") ?? "",
   };
+  // Filters replace the history entry — Back leaves the page instead of undoing keystrokes.
   const setParam = (k: string, v: string) =>
-    setParams((p) => {
-      if (v) p.set(k, v);
-      else p.delete(k);
-      return p;
-    });
-  const { data: opps, isLoading } = useOpportunities({
+    setParams(
+      (p) => {
+        if (v) p.set(k, v);
+        else p.delete(k);
+        return p;
+      },
+      { replace: true },
+    );
+  // The text filter applies after a short pause, not on every keystroke.
+  const [q, setQ] = useState(filters.q);
+  useEffect(() => {
+    if (q === filters.q) return;
+    const t = setTimeout(() => setParam("q", q), 250);
+    return () => clearTimeout(t);
+  });
+  const { data: opps, isLoading, error, refetch } = useOpportunities({
     q: filters.q || undefined,
     channel: filters.channel || undefined,
     network: filters.network || undefined,
@@ -62,21 +73,21 @@ export function Pipeline() {
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="relative min-w-48 flex-1 sm:max-w-xs">
           <Search size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted" />
-          <input value={filters.q} onChange={(e) => setParam("q", e.target.value)} placeholder="Filter…" className="field h-9 pl-9" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…" className="field h-9 pl-9" />
         </div>
         <Select className="h-9 w-auto py-0" value={filters.channel} onChange={(v) => setParam("channel", v)} options={meta?.channels ?? []} placeholder="All channels" />
         <Select className="h-9 w-auto py-0" value={filters.network} onChange={(v) => setParam("network", v)} options={meta?.networks ?? []} placeholder="Any network" />
         <Select className="h-9 w-auto py-0" value={filters.kind} onChange={(v) => setParam("kind", v)} options={meta?.kinds ?? []} placeholder="Jobs & projects" />
-        {view === "list" && (
-          <Select className="h-9 w-auto py-0" value={filters.stage} onChange={(v) => setParam("stage", v)} options={meta?.stages ?? []} placeholder="Any stage" />
-        )}
+        <Select className="h-9 w-auto py-0" value={filters.stage} onChange={(v) => setParam("stage", v)} options={meta?.stages ?? []} placeholder="Any stage" />
         <label className="ml-auto flex cursor-pointer items-center gap-2 text-[13px] text-muted">
           <input type="checkbox" checked={showClosed} onChange={(e) => setParam("closed", e.target.checked ? "1" : "")} className="accent-[var(--accent)]" />
           Show won & lost
         </label>
       </div>
 
-      {isLoading || !opps ? (
+      {error && !opps ? (
+        <PageError error={error} onRetry={refetch} />
+      ) : isLoading || !opps ? (
         <PageLoading />
       ) : view === "board" ? (
         <Board opps={opps} showClosed={showClosed} />
@@ -94,6 +105,7 @@ export function Pipeline() {
 function Board({ opps, showClosed }: { opps: Summary[]; showClosed: boolean }) {
   const { data: meta } = useMeta();
   const act = useOppActions();
+  const toast = useToast();
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<string | null>(null);
   const [lostFor, setLostFor] = useState<number | null>(null);
@@ -109,7 +121,7 @@ function Board({ opps, showClosed }: { opps: Summary[]; showClosed: boolean }) {
     setOver(null);
     setDragging(null);
     if (!opp || opp.stage === stage) return;
-    if (stage === "matcher" && opp.channel !== "toptal") return;
+    if (stage === "matcher" && opp.channel !== "toptal") return toast.error("Sent to matcher is only for Toptal deals");
     if (stage === "lost") setLostFor(opp.id);
     else act.update.mutate({ id: opp.id, stage });
   };
@@ -128,7 +140,10 @@ function Board({ opps, showClosed }: { opps: Summary[]; showClosed: boolean }) {
                 setOver(col.value);
               }}
               onDragLeave={() => setOver((o) => (o === col.value ? null : o))}
-              onDrop={() => drop(col.value)}
+              onDrop={(e) => {
+                e.preventDefault(); // a link dragged in from another tab must not navigate away
+                drop(col.value);
+              }}
               className={cx(
                 "flex w-72 shrink-0 flex-col rounded-2xl border border-transparent bg-panel-2/50 p-2 transition",
                 over === col.value && "border-accent bg-accent/5",
@@ -180,9 +195,9 @@ function Card({ opp, onDrag, dragging, channelLabel }: { opp: Summary; onDrag: (
         onDrag(opp.id);
       }}
       onDragEnd={() => onDrag(null)}
-      onClick={() => drawer.open(opp.id)}
+      {...pressable(() => drawer.open(opp.id))}
       className={cx(
-        "cursor-pointer rounded-xl border border-line bg-panel p-3 shadow-xs transition hover:border-muted/40 hover:shadow-sm",
+        "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-xl border border-line bg-panel p-3 shadow-xs transition hover:border-muted/40 hover:shadow-sm",
         dragging && "opacity-40",
       )}
     >
@@ -278,7 +293,7 @@ function ListView({ opps }: { opps: Summary[] }) {
             {sorted.map((o) => {
               const rem = o.next_reminder ? due(o.next_reminder.due_at) : null;
               return (
-                <tr key={o.id} onClick={() => drawer.open(o.id)} className="cursor-pointer border-b border-line/60 last:border-0 hover:bg-panel-2">
+                <tr key={o.id} {...pressable(() => drawer.open(o.id))} className="cursor-pointer outline-none focus-visible:bg-panel-2 border-b border-line/60 last:border-0 hover:bg-panel-2">
                   <td className="max-w-80 px-3 py-2.5">
                     <div className="flex items-center gap-2">
                       <span className="truncate font-medium">{o.company}</span>

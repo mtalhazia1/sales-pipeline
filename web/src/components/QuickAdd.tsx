@@ -29,13 +29,17 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
   }, [open]);
 
   const set = (k: keyof typeof EMPTY, v: string) => setF((p) => ({ ...p, [k]: v }));
+  // Until you pick a channel yourself, it follows the link (and goes back to "Other" when the link is cleared).
   const onUrl = (url: string) => {
     set("application_url", url);
-    const ch = channelFromUrl(url, meta);
-    if (ch && !channelTouched) set("channel", ch);
+    if (!channelTouched) set("channel", channelFromUrl(url, meta) ?? "");
   };
-  const channel = f.channel || "linkedin";
+  const channel = f.channel || "other";
   const stages = (meta?.stages ?? []).filter((s) => s.value !== "matcher" || channel === "toptal");
+  // "Sent to matcher" is Toptal-only: leaving Toptal moves the stage back to Applied.
+  useEffect(() => {
+    if (channel !== "toptal" && f.stage === "matcher") set("stage", "applied");
+  }, [channel, f.stage]);
   const remind = followUp && ["applied", "matcher", "proposal"].includes(f.stage);
 
   const submit = async () => {
