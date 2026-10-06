@@ -84,8 +84,9 @@ deliberately not taken — so the owner can overrule any of them.
 - Changing your password **signs out every other browser** (agent keys and connected apps are left alone —
   revoke those in Settings).
 
-**Security hardening**: bounded OAuth registration (stored fields trimmed, 50 new clients/day, unused ones purged
-daily) and pending authorizations (100, short fields); argon2 checks two at a time and attempts counted before
+**Security hardening**: bounded OAuth registration (stored fields trimmed, nginx rate limit, never-connected
+clients purged daily — no hard count cap, which would let anyone lock the owner out) and pending authorizations
+(short fields, oldest evicted past 1000); argon2 checks two at a time and attempts counted before
 checking (a burst of logins could OOM the service); same response time for unknown emails; exact-Origin CSRF
 check; URL fields accept web addresses only; text length caps; nginx rate limit on login and OAuth endpoints;
 extra systemd sandboxing (no outbound network, no devices).

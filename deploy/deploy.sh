@@ -28,12 +28,13 @@ $SSH "sudo systemctl daemon-reload && { sudo chmod -R go= /var/lib/$APP 2>/dev/n
 # nginx is shared with the other projects: a site file that fails `nginx -t` is rolled back, never left in place.
 if $SSH "sudo test -d /etc/letsencrypt/live/$DOMAIN"; then  # (first run: provision.sh web gets the cert first)
   echo "→ nginx site"
-  render deploy/nginx.conf | $SSH "sudo tee /tmp/$APP.nginx >/dev/null"
+  # Staged inside root-owned sites-available (never a world-writable /tmp path another user could symlink).
+  render deploy/nginx.conf | $SSH "sudo tee /etc/nginx/sites-available/.$APP.new >/dev/null"
   $SSH "sudo bash -s" <<REMOTE
 set -euo pipefail
 site=/etc/nginx/sites-available/$APP
 cp \$site \$site.prev 2>/dev/null || true
-install -m 644 /tmp/$APP.nginx \$site && rm -f /tmp/$APP.nginx
+mv /etc/nginx/sites-available/.$APP.new \$site && chmod 644 \$site
 if nginx -t 2>/dev/null; then systemctl reload nginx; rm -f \$site.prev
 else echo "nginx -t failed — keeping the previous site file" >&2; mv \$site.prev \$site; exit 1; fi
 REMOTE

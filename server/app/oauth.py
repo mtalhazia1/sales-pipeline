@@ -19,7 +19,7 @@ from mcp.server.auth.provider import (
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 
 from app import config
 from app.auth import new_token, sha256, token_row
@@ -29,12 +29,13 @@ from app.service import ServiceError
 
 SCOPE = "sales"
 # Pending consent requests live in memory for 10 minutes (single process; a restart just means
-# the person clicks "connect" again). Capped, so anonymous /authorize calls can't fill the RAM.
+# the person clicks "connect" again). Bounded by evicting the oldest — never by refusing, which would let
+# anyone lock the owner out of connecting by filling the slots.
 _pending: dict[str, tuple[float, str, AuthorizationParams]] = {}
-MAX_PENDING = 100
-# Registration is open and anonymous (that's how MCP clients connect), so what it stores is bounded:
-# only the fields we use, short, and a limit on how many clients can be registered per day.
-MAX_NEW_CLIENTS_PER_DAY = 50
+MAX_PENDING = 1000
+# Registration is open and anonymous (that's how MCP clients connect), so each stored row is small (only
+# the fields we use, short); nginx rate-limits the endpoint and the daily job purges clients that never
+# connected. No hard count cap for the same lock-out reason.
 _KEEP_CLIENT_FIELDS = {"client_id", "client_secret", "client_id_issued_at", "client_secret_expires_at", "redirect_uris",
                        "token_endpoint_auth_method", "grant_types", "response_types", "client_name", "client_uri", "scope"}
 
@@ -78,9 +79,6 @@ class Provider:
         if info.get("scope") and len(info["scope"]) > 100:
             raise RegistrationError("invalid_client_metadata", "Scope too long.")
         with session_scope() as s:
-            recent = s.scalar(select(func.count()).select_from(OAuthClient).where(OAuthClient.created_at > utcnow() - timedelta(days=1)))
-            if recent >= MAX_NEW_CLIENTS_PER_DAY:
-                raise RegistrationError("invalid_client_metadata", "Too many new clients today — try again tomorrow.")
             s.merge(OAuthClient(client_id=client_info.client_id, info=info))
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
@@ -89,8 +87,8 @@ class Provider:
         now = time.time()
         for key in [k for k, (ts, _, _) in _pending.items() if ts < now - 600]:
             _pending.pop(key, None)
-        if len(_pending) >= MAX_PENDING:
-            raise AuthorizeError("temporarily_unavailable", "Too many connection requests in progress — try again in a few minutes.")
+        while len(_pending) >= MAX_PENDING:
+            _pending.pop(next(iter(_pending)))  # oldest first (dicts keep insertion order)
         request_id = secrets.token_urlsafe(24)
         _pending[request_id] = (now, client.client_id, params)
         return f"{config.BASE_URL}/oauth/consent?request={request_id}"
