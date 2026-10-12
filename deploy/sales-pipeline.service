@@ -11,7 +11,9 @@ Environment=SP_DATA_DIR=/var/lib/sales-pipeline
 Environment=SP_WEB_DIST=/srv/sales-pipeline/web/dist
 ExecStartPre=/srv/sales-pipeline/.venv/bin/alembic upgrade head
 # ONE worker on purpose: login throttling and pending OAuth consents live in process memory.
-ExecStart=/srv/sales-pipeline/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port __PORT__ --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+# Graceful-shutdown cap: MCP clients hold long-lived streams that would otherwise stall every restart
+# for systemd's 90s stop timeout (clients reconnect on their own).
+ExecStart=/srv/sales-pipeline/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port __PORT__ --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header --timeout-graceful-shutdown 5
 Restart=always
 RestartSec=3
 

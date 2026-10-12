@@ -49,6 +49,7 @@ REMOTE
 
 if [ "${1:-}" != "--no-restart" ]; then
   echo "→ restarting (migrations run on start)"
-  $SSH "sudo systemctl restart $APP && sleep 2 && curl -fsS http://127.0.0.1:$PORT/healthz && echo && systemctl is-active $APP"
+  # Startup takes a few seconds (migrations, imports): poll instead of a fixed sleep.
+  $SSH "sudo systemctl restart $APP && for i in \$(seq 20); do curl -fsS http://127.0.0.1:$PORT/healthz 2>/dev/null && break; sleep 1; done; echo && systemctl is-active $APP"
   curl -fsS -o /dev/null -w "public https://$DOMAIN/healthz → %{http_code}\n" "https://$DOMAIN/healthz" || echo "(public check failed — DNS/firewall?)"
 fi
