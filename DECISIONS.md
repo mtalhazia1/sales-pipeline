@@ -94,3 +94,14 @@ extra systemd sandboxing (no outbound network, no devices).
 **Not done (deliberately)**: undelete (a delete is confirmed and agents can't delete); per-account login lockout
 (the per-IP limit plus nginx is enough for one owner); refresh-token reuse detection (rotation is in place); a
 `last_message` preview in the agenda (agents can call get_opportunity).
+
+## Agent alerts — 2026-10-12
+
+- New MCP tool **`notify_owner`** (title, optional message / deal / link) → the **Alerts** page (sidebar, badge,
+  `G A`), plus an "unread alerts" button on Today. In-app only: no email or push, because the ask was "I check it
+  when I'm available".
+- An alert is **its own record** (who sent it, when, read or not). It is not a deal timeline event and doesn't flag
+  the deal for review, since it says nothing new about the deal. Alerts can't be deleted; mark them read.
+- **No duplicates while unread**: the same title for the same deal (or for no deal) returns the existing alert with
+  `created=false`, so a scheduled agent can't flood the inbox. Once you read it, the same alert can be sent again.
+- An alert about a deal that later gets deleted stays, without the deal link.

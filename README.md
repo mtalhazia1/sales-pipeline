@@ -2,8 +2,8 @@
 
 Agents find and log the work (jobs, projects, messages, follow-ups); a human reviews and steers.
 
-- **Web UI** — Today (what needs you), Pipeline (board + list), Review (what agents changed), Insights (funnel by channel/network), Settings (connect agents).
-- **MCP server** at `/mcp` (protocol 2026-07-28, older clients still served) — 9 tools, OAuth for Claude apps, API keys for headless agents.
+- **Web UI** — Today (what needs you), Alerts (what agents flagged for you to act on), Pipeline (board + list), Review (what agents changed), Insights (funnel by channel/network), Settings (connect agents).
+- **MCP server** at `/mcp` (protocol 2026-07-28, older clients still served) — 10 tools, OAuth for Claude apps, API keys for headless agents.
 - **REST API** at `/api` — what the UI uses; API keys work here too.
 
 One process (FastAPI + MCP SDK 2.3), one SQLite file, one port.

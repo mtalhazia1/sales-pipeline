@@ -92,6 +92,19 @@ export type Agenda = {
   new_leads_total: number;
   upcoming: AgendaReminder[];
   needs_review: number;
+  unread_notifications: number;
+};
+
+/** An alert an agent sent the owner (MCP notify_owner). */
+export type AppNotification = {
+  id: number;
+  title: string;
+  message: string | null;
+  url: string | null;
+  opportunity: { id: number; company: string; title: string | null } | null;
+  created_by: string;
+  created_at: string;
+  read_at: string | null;
 };
 
 export type Funnel = {

@@ -55,6 +55,14 @@ export function Login() {
         <Button type="submit" variant="primary" className="w-full" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </Button>
+        {/* No email sending (no external services) — the reset is an admin command on the server. */}
+        <details className="text-[13px] text-muted">
+          <summary className="cursor-pointer select-none text-center hover:text-fg">Forgot password?</summary>
+          <p className="mt-2">
+            From the repo, run <code className="rounded bg-line/60 px-1">bash deploy/admin.sh reset-password you@example.com</code>.
+            It prints a new password; change it in Settings after signing in.
+          </p>
+        </details>
       </form>
     </div>
   );

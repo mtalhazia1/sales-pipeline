@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
-import { BarChart3, Bot, CalendarCheck, Columns3, Moon, Plus, Search, Settings, Sun } from "lucide-react";
+import { BarChart3, Bell, Bot, CalendarCheck, Columns3, Moon, Plus, Search, Settings, Sun } from "lucide-react";
 import { useAgenda } from "../lib/hooks";
 import { CommandPalette } from "./CommandPalette";
 import { Drawer } from "./Drawer";
@@ -18,8 +18,9 @@ export function Shell() {
 
   const todayCount = agenda ? agenda.due_reminders.length + agenda.your_move.length : 0;
   const reviewCount = agenda?.needs_review ?? 0;
+  const alertCount = agenda?.unread_notifications ?? 0;
 
-  // Keyboard: ⌘K / "/" search · N new · G then T/P/R/I/S to navigate
+  // Keyboard: ⌘K / "/" search · N new · G then T/A/P/R/I/S to navigate
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest?.("input,textarea,select,[contenteditable]");
@@ -33,7 +34,7 @@ export function Shell() {
       const k = e.key.toLowerCase();
       if (pendingG.current) {
         pendingG.current = false;
-        const dest = { t: "/", p: "/pipeline", r: "/review", i: "/insights", s: "/settings" }[k];
+        const dest = { t: "/", a: "/alerts", p: "/pipeline", r: "/review", i: "/insights", s: "/settings" }[k];
         if (dest) nav(dest);
         return;
       }
@@ -54,6 +55,7 @@ export function Shell() {
 
   const items: { to: string; label: string; icon: ReactNode; badge?: number; tone?: string }[] = [
     { to: "/", label: "Today", icon: <CalendarCheck size={18} />, badge: todayCount, tone: "bg-orange-500 text-white" },
+    { to: "/alerts", label: "Alerts", icon: <Bell size={18} />, badge: alertCount, tone: "bg-rose-500 text-white" },
     { to: "/pipeline", label: "Pipeline", icon: <Columns3 size={18} /> },
     { to: "/review", label: "Review", icon: <Bot size={18} />, badge: reviewCount, tone: "bg-accent text-accent-fg" },
     { to: "/insights", label: "Insights", icon: <BarChart3 size={18} /> },
@@ -137,7 +139,7 @@ export function Shell() {
       </main>
 
       {/* mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
         {items.map((i) => (
           <NavLink
             key={i.to}

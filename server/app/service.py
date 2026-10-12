@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import domain
 from app.db import iso, utcnow
-from app.models import Event, Opportunity, Reminder, Setting
+from app.models import Event, Notification, Opportunity, Reminder, Setting
 
 
 class ServiceError(Exception):
@@ -128,9 +128,9 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
-URL_FIELDS = ("application_url", "company_url", "contact_url")
+URL_FIELDS = ("application_url", "company_url", "contact_url", "url")
 # Long enough for any real job post; bounded so one bad agent call can't store megabytes.
-MAX_LEN = {"description": 50_000, "notes": 20_000}
+MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000}
 
 
 def _clean(field: str, value: Any) -> Any:
@@ -555,6 +555,57 @@ def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
     s.delete(r)
 
 
+# ---------------------------------------------------------------- notifications
+
+def notify(s: Session, actor: Actor, title: str, message: str | None = None, opportunity_id: int | None = None,
+           url: str | None = None) -> tuple[Notification, bool]:
+    """An alert for the owner's Alerts inbox. It is its own record (sender + time), not a deal event, and
+    doesn't flag the deal for review. Sending the same unread alert again (same title and deal) returns
+    the existing one with created=False, so an agent on a schedule doesn't pile up copies."""
+    title = (title or "").strip()
+    if not title:
+        raise ServiceError("title can't be empty.")
+    if len(title) > 200:
+        raise ServiceError("title is too long (max 200 characters) — put the details in message.")
+    message, url = _clean("message", message), _clean("url", url)
+    opp = _get(s, opportunity_id) if opportunity_id is not None else None
+    existing = s.scalar(select(Notification).where(
+        Notification.read_at.is_(None), Notification.title == title,
+        Notification.opportunity_id.is_(None) if opp is None else Notification.opportunity_id == opp.id))
+    if existing:
+        return existing, False
+    n = Notification(title=title, body=message, url=url, opportunity=opp, created_by=actor.name, created_at=utcnow())
+    s.add(n)
+    s.flush()
+    return n, True
+
+
+def notification_dict(n: Notification) -> dict:
+    opp = n.opportunity if n.opportunity and not n.opportunity.archived_at else None
+    return {"id": n.id, "title": n.title, "message": n.body, "url": n.url,
+            "opportunity": {"id": opp.id, "company": opp.company, "title": opp.title} if opp else None,
+            "created_by": n.created_by, "created_at": iso(n.created_at), "read_at": iso(n.read_at)}
+
+
+def notifications(s: Session, *, unread_only: bool = False, limit: int = 200) -> list[Notification]:
+    """Unread first, then newest first."""
+    stmt = (select(Notification).order_by(Notification.read_at.is_not(None), Notification.id.desc())
+            .limit(max(1, min(limit, 500))))
+    if unread_only:
+        stmt = stmt.where(Notification.read_at.is_(None))
+    return list(s.scalars(stmt).unique().all())
+
+
+def mark_notifications_read(s: Session, ids: list[int], read: bool = True) -> int:
+    rows = s.scalars(select(Notification).where(Notification.id.in_(ids))).unique().all()
+    for n in rows:
+        if read and not n.read_at:
+            n.read_at = utcnow()
+        elif not read:
+            n.read_at = None
+    return len(rows)
+
+
 # ---------------------------------------------------------------- agenda / insights
 
 def agenda(s: Session) -> dict:
@@ -603,6 +654,7 @@ def agenda(s: Session) -> dict:
         "new_leads_total": len(leads),
         "upcoming": [rem(r, o) for r, o in upcoming],
         "needs_review": s.scalar(select(func.count()).where(Opportunity.needs_review.is_(True), active)) or 0,
+        "unread_notifications": s.scalar(select(func.count()).where(Notification.read_at.is_(None))) or 0,
     }
 
 

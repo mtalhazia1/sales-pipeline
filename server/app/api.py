@@ -239,6 +239,23 @@ def review_all(body: ApproveIn, c: Ctx = Depends(human), s: Session = Depends(db
     return {"reviewed": service.mark_reviewed(s, c.actor, ids=body.ids)}
 
 
+# ---------------------------------------------------------------- notifications (agents send them via MCP)
+
+@router.get("/notifications")
+def list_notifications(unread: bool = False, c: Ctx = Depends(ctx), s: Session = Depends(db)):
+    return [service.notification_dict(n) for n in service.notifications(s, unread_only=unread)]
+
+
+class ReadIn(BaseModel):
+    ids: list[int]
+    read: bool = True
+
+
+@router.post("/notifications/read")
+def mark_read(body: ReadIn, c: Ctx = Depends(human), s: Session = Depends(db)):
+    return {"updated": service.mark_notifications_read(s, body.ids, body.read)}
+
+
 # ---------------------------------------------------------------- dashboards
 
 @router.get("/agenda")

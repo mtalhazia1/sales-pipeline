@@ -44,6 +44,9 @@ How to work:
   an AI / full-stack software shop). Pass "" to clear a text field.
 - Dates: YYYY-MM-DD (means 09:00 in the owner's timezone) or ISO-8601 datetime; get_agenda returns
   today's date and the timezone.
+- When something needs the owner to act or decide (a client question only they can answer, an offer,
+  a call time to confirm, a deadline close), call notify_owner — they read their Alerts inbox when
+  they're free. Not for routine updates: those are already in the activity log.
 - You can't delete. If you added something by mistake, log a note starting "DELETE:" — the owner
   removes it during review.
 - Everything you write is shown to the owner for review; be factual and concise.
@@ -217,10 +220,27 @@ def update_reminder(
     return _run(lambda s: service.reminder_dict(service.update_reminder(s, _actor(), reminder_id, done=done, due=due, note=note)))
 
 
+@mcp.tool(annotations=WRITE)
+def notify_owner(
+    title: Annotated[str, Field(description="One line, max 200 chars: what needs the owner, e.g. 'Acme wants a call Thursday — confirm a time'")],
+    message: Annotated[str | None, Field(description="Details and the action you suggest")] = None,
+    opportunity_id: Annotated[int | None, Field(description="The deal this is about, if any")] = None,
+    url: Annotated[str | None, Field(description="A link the owner should open (email thread, job post, ...)")] = None,
+) -> Result:
+    """Alert the owner about something they need to act on or decide; it lands in their Alerts inbox.
+    The same unread alert (same title and deal) is never stored twice: created=false returns the
+    existing one."""
+    def go(s):
+        n, created = service.notify(s, _actor(), title, message, opportunity_id, url)
+        return {"created": created, "notification": service.notification_dict(n)}
+    return _run(go)
+
+
 @mcp.tool(annotations=READ)
 def get_agenda() -> Result:
     """Today's priorities: due/overdue reminders, deals where the owner owes a reply, open deals that
-    went quiet without a next step, best new leads, and the coming week's reminders."""
+    went quiet without a next step, best new leads, the coming week's reminders, and how many of your
+    alerts the owner hasn't read yet."""
     return _run(service.agenda)
 
 

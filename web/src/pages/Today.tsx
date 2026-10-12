@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Bell, Check, Clock, PartyPopper, Send, Sparkles, X } from "lucide-react";
+import { Bell, BellRing, Check, Clock, PartyPopper, Send, Sparkles, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import type { AgendaReminder, Summary } from "../lib/api";
 import { due, inDays, snoozed } from "../lib/format";
@@ -42,6 +42,11 @@ export function Today() {
   return (
     <>
       <PageHeader title={hello} sub={`${date} · ${total ? `${total} thing${total > 1 ? "s" : ""} need you` : "nothing urgent"}`}>
+        {a.unread_notifications > 0 && (
+          <Button size="sm" onClick={() => nav("/alerts")}>
+            <BellRing size={14} className="text-rose-500" /> {a.unread_notifications} unread alert{a.unread_notifications > 1 ? "s" : ""}
+          </Button>
+        )}
         {a.needs_review > 0 && (
           <Button size="sm" onClick={() => nav("/review")}>
             <Sparkles size={14} className="text-accent" /> {a.needs_review} agent update{a.needs_review > 1 ? "s" : ""} to review

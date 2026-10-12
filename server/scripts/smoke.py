@@ -22,6 +22,7 @@ ok = lambda cond, msg: print(("  ✓ " if cond else "  ✗ FAIL ") + msg) or (co
 
 
 URLS: dict[int, str] = {}
+NOTIFS: list[int] = []
 
 
 def structured(result):
@@ -66,6 +67,16 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         ok(st["overall"]["applied"] >= 1, f"[{mode}] stats: applied counted")
         d = structured(await c.call_tool("get_opportunity", {"opportunity_id": opp["id"]}))
         ok(len(d["events"]) >= 4 and d["events"][0]["actor_type"] == "agent", f"[{mode}] timeline has agent events")
+        alert = {"title": f"Smoke Test {mode}: confirm call time", "message": "They proposed Thu 3pm.",
+                 "opportunity_id": opp["id"], "url": "mail.google.com/mail/u/0/#inbox/abc"}
+        n = structured(await c.call_tool("notify_owner", alert))
+        ok(n["created"] and n["notification"]["opportunity"]["id"] == opp["id"], f"[{mode}] notify_owner: alert sent")
+        n2 = structured(await c.call_tool("notify_owner", alert))
+        ok(not n2["created"] and n2["notification"]["id"] == n["notification"]["id"], f"[{mode}] same unread alert not sent twice")
+        bad = await c.call_tool("notify_owner", {"title": "x", "url": "javascript:alert(1)"})
+        ok(bad.is_error and "web address" in bad.content[0].text, f"[{mode}] notify_owner: non-web link refused")
+        ok(structured(await c.call_tool("get_agenda", {}))["unread_notifications"] >= 1, f"[{mode}] agenda counts unread alerts")
+        NOTIFS.append(n["notification"]["id"])
     return created
 
 
@@ -93,6 +104,10 @@ async def main():
     ok(feed and feed[0]["actor_name"] == "Smoke key", "activity feed attributes the agent by key name")
     rv = web.post(f"/api/opportunities/{created[0]}/review").json()
     ok(rv["reviewed"] == 1, "human review clears the flag")
+    unread = web.get("/api/notifications", params={"unread": "true"}).json()
+    ok({*NOTIFS} <= {n["id"] for n in unread}, "alerts listed in the inbox")
+    ok(web.post("/api/notifications/read", json={"ids": NOTIFS}).json()["updated"] == len(NOTIFS), "alerts marked read")
+    ok(not {*NOTIFS} & {n["id"] for n in web.get("/api/notifications", params={"unread": "true"}).json()}, "read alerts leave the unread list")
 
     print("OAuth (what Claude does when you add the connector)")
     unauth = httpx.post(f"{BASE}/mcp", json={})

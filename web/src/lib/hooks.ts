@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, type Agenda, type Detail, type Reminder, type Summary } from "./api";
+import { api, type Agenda, type AppNotification, type Detail, type Reminder, type Summary } from "./api";
 import { useToast } from "../components/ui";
 
 export function useAgenda() {
@@ -70,6 +70,27 @@ export function useOppActions() {
     remove: m(({ id }: { id: number }) => api.del(`/opportunities/${id}`), "Deleted"),
     refresh,
   };
+}
+
+export function useNotifications(unreadOnly: boolean) {
+  return useQuery({
+    queryKey: ["notifications", unreadOnly],
+    queryFn: () => api.get<AppNotification[]>(`/notifications${unreadOnly ? "?unread=true" : ""}`),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useMarkRead() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: ({ ids, read = true }: { ids: number[]; read?: boolean }) => api.post("/notifications/read", { ids, read }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["notifications"] });
+      qc.invalidateQueries({ queryKey: ["agenda"] });
+    },
+    onError: (e) => toast.error(e),
+  });
 }
 
 /** The opportunity drawer lives in the URL (?o=12) so it opens over any page and survives reloads. */

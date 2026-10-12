@@ -6,6 +6,7 @@ import { useMeta } from "./lib/meta";
 import { Shell } from "./components/Shell";
 import { PageError, PageLoading } from "./components/ui";
 import { Today } from "./pages/Today";
+import { Alerts } from "./pages/Alerts";
 import { Pipeline } from "./pages/Pipeline";
 import { Review } from "./pages/Review";
 import { Insights } from "./pages/Insights";
@@ -20,6 +21,7 @@ export function App() {
       <Route path="/oauth/consent" element={<Authed><Consent /></Authed>} />
       <Route element={<Authed><Shell /></Authed>}>
         <Route index element={<Today />} />
+        <Route path="alerts" element={<Alerts />} />
         <Route path="pipeline" element={<Pipeline />} />
         <Route path="review" element={<Review />} />
         <Route path="insights" element={<Insights />} />

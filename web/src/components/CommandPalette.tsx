@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { BarChart3, Bot, CalendarCheck, Columns3, Moon, Plus, Search, Settings } from "lucide-react";
+import { BarChart3, Bell, Bot, CalendarCheck, Columns3, Moon, Plus, Search, Settings } from "lucide-react";
 import { useDrawer, useOpportunities } from "../lib/hooks";
 import { StagePill, cx } from "./ui";
 import { toggleTheme } from "./theme";
@@ -26,6 +26,7 @@ export function CommandPalette({ open, onClose, onNew }: { open: boolean; onClos
     const actions: Item[] = [
       { key: "new", label: "New opportunity", icon: <Plus size={15} />, hint: "N", run: onNew, text: "new add create" },
       { key: "today", label: "Today", icon: <CalendarCheck size={15} />, hint: "G T", run: go("/"), text: "today agenda" },
+      { key: "alerts", label: "Alerts from agents", icon: <Bell size={15} />, hint: "G A", run: go("/alerts"), text: "alerts notifications inbox" },
       { key: "pipe", label: "Pipeline", icon: <Columns3 size={15} />, hint: "G P", run: go("/pipeline"), text: "pipeline board list" },
       { key: "rev", label: "Review agent changes", icon: <Bot size={15} />, hint: "G R", run: go("/review"), text: "review agents activity" },
       { key: "ins", label: "Insights", icon: <BarChart3 size={15} />, hint: "G I", run: go("/insights"), text: "insights stats analytics" },
