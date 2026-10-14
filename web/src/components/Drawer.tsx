@@ -266,11 +266,16 @@ function Outreach({ opp, save }: { opp: Detail; save: (patch: Record<string, unk
   const options = (templates ?? [])
     .filter((t) => !t.archived || t.id === opp.template?.id)
     .map((t) => ({ value: String(t.id), label: `${labelOf(meta?.template_categories, t.category)} · ${t.name}${t.archived ? " (deleted)" : ""}` }));
-  if (!job && !opp.template && !options.length) return null;
+  // Until the list loads (or if it fails) still show the variant this deal has, not "none".
+  if (opp.template && !options.some((o) => o.value === String(opp.template!.id)))
+    options.unshift({ value: String(opp.template.id), label: opp.template.name });
+  // Upwork proposals don't use templates — no picker there unless one is already recorded.
+  const showPicker = !!opp.template || (options.length > 0 && opp.channel !== "upwork");
+  if (!job && !showPicker) return null;
   return (
     <Section title={job ? "Application" : "Outreach"}>
       <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-        {(options.length > 0 || opp.template) && (
+        {showPicker && (
           <div className="sm:col-span-2">
             <Field label="First message sent">
               <Select
@@ -291,7 +296,7 @@ function Outreach({ opp, save }: { opp: Detail; save: (patch: Record<string, unk
               <LinkInput value={opp.cover_letter_url} onSave={(v, revert) => save({ cover_letter_url: v }, revert)} placeholder="docs.google.com/…" />
             </Field>
             <Field label="Resume version (base it was tailored from)">
-              <InlineInput value={opp.resume_version} onSave={(v, revert) => save({ resume_version: v }, revert)} placeholder="AI engineer v2" />
+              <InlineInput value={opp.resume_version} onSave={(v, revert) => save({ resume_version: v }, revert)} placeholder="AI engineer v2" maxLength={120} />
             </Field>
           </>
         )}
@@ -585,8 +590,10 @@ export function eventTitle(e: TimelineEvent, labels: (field: string, v: unknown)
       return "Added";
     case "client_message":
       return "Client messaged";
-    case "my_message":
-      return "Sent a message";
+    case "my_message": {
+      const variant = e.changes?.first_message?.[1];
+      return variant ? <>Sent a message <span className="text-muted">· template “{String(variant)}”</span></> : "Sent a message";
+    }
     case "call":
       return "Call";
     case "note":
@@ -617,7 +624,7 @@ export function eventTitle(e: TimelineEvent, labels: (field: string, v: unknown)
       return (
         <span className="inline-flex flex-wrap gap-x-3 gap-y-0.5">
           {Object.entries(e.changes ?? {}).map(([f, [a, b]]) => (
-            <span key={f}>
+            <span key={f} className="min-w-0 [overflow-wrap:anywhere]">
               <span className="text-muted">{f.replace(/_/g, " ")}</span>{" "}
               {a != null && a !== "" && <span className="text-muted line-through decoration-muted/50">{labels(f, a)}</span>}
               {a != null && a !== "" && <ArrowRight size={11} className="mx-0.5 inline text-muted" />}

@@ -129,3 +129,21 @@ extra systemd sandboxing (no outbound network, no devices).
   send. It becomes current only if the LinkedIn category was empty.
 - Template edits are **not** timeline events. Events belong to a deal, templates are owner-only settings, and the
   `updated_at` on each variant is enough.
+
+## Re-review fixes: templates and application docs — 2026-10-14
+
+Judgment calls (overrule any of them):
+- **One first message per deal.** `log_activity` refuses a *different* template_id once a deal has one
+  ("templates are for first contact only"). Otherwise a later LinkedIn nudge silently re-credits a reply to the
+  wrong variant. People can still change it in the drawer.
+- **Follow-ups aren't templated either.** The agent sets a reminder instead. The ask covered first contact
+  (templates) and replies (owner); follow-ups were unspecified, so they go to the safer side.
+- **Warm vs cold** for agents: warm = they know the owner, or the deal's network is referral / FirstGlance. A
+  LinkedIn connection alone is cold. This keeps the Insights comparison clean.
+- **Unfillable placeholder → don't send, notify_owner.** `get_message_template` now returns the `placeholders` list.
+- **Email variants require a subject.**
+- **Deleting the current variant doesn't promote another.** The page warns in the confirm dialog and shows a
+  "no current message" banner on the category until one is picked.
+- A deleted (archived) variant can't be newly assigned to a deal. A deal keeps the one it already has.
+- "Sent" on the Messages page counts only deals that were actually sent (applied), matching Insights.
+- Search / add / update results now include `template_id` and the doc links, so an agent can see what was already sent.

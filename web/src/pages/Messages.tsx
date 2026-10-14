@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Check, MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
-import type { MessageTemplate } from "../lib/api";
+import { AlertTriangle, Check, MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
+import type { TemplateWithUsage } from "../lib/api";
 import { pct } from "../lib/format";
 import { useTemplateActions, useTemplates } from "../lib/hooks";
 import { useMeta } from "../lib/meta";
@@ -8,14 +8,12 @@ import { PageHeader } from "../components/Shell";
 import { Button, Empty, Modal, PageError, PageLoading, cx } from "../components/ui";
 import { useConfirm } from "../components/confirm";
 
-const EMAIL = new Set(["cold_email", "warm_email"]);
-
 /** First-contact message variants. Agents fetch each category's current one (MCP get_message_template)
  *  and send it word for word, filling only the {placeholders}. */
 export function Messages() {
   const { data: meta } = useMeta();
   const { data: list, isLoading, error, refetch } = useTemplates();
-  const [editing, setEditing] = useState<{ category: string; template?: MessageTemplate } | null>(null);
+  const [editing, setEditing] = useState<{ category: string; template?: TemplateWithUsage; hasCurrent: boolean } | null>(null);
 
   return (
     <>
@@ -40,18 +38,24 @@ export function Messages() {
         <div className="space-y-8">
           {meta.template_categories.map((cat) => {
             const items = list.filter((t) => t.category === cat.value);
+            const hasCurrent = items.some((t) => t.is_current);
             return (
               <section key={cat.value}>
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <h2 className="font-semibold">{cat.label}</h2>
-                  <Button size="sm" onClick={() => setEditing({ category: cat.value })}>
+                  <Button size="sm" onClick={() => setEditing({ category: cat.value, hasCurrent })}>
                     <MessageSquarePlus size={14} /> New variant
                   </Button>
                 </div>
+                {items.length > 0 && !hasCurrent && (
+                  <div className="mb-2 flex items-center gap-2 rounded-xl bg-amber-500/12 px-3 py-2 text-[13px] text-amber-700 dark:text-amber-300">
+                    <AlertTriangle size={14} className="shrink-0" /> No current message — agents won't send any until you pick one with "Use this".
+                  </div>
+                )}
                 {items.length ? (
                   <div className="space-y-2">
                     {items.map((t) => (
-                      <TemplateCard key={t.id} t={t} onEdit={() => setEditing({ category: t.category, template: t })} />
+                      <TemplateCard key={t.id} t={t} onEdit={() => setEditing({ category: t.category, template: t, hasCurrent })} />
                     ))}
                   </div>
                 ) : (
@@ -67,7 +71,7 @@ export function Messages() {
   );
 }
 
-function TemplateCard({ t, onEdit }: { t: MessageTemplate; onEdit: () => void }) {
+function TemplateCard({ t, onEdit }: { t: TemplateWithUsage; onEdit: () => void }) {
   const act = useTemplateActions();
   const confirm = useConfirm();
   const u = t.usage;
@@ -99,11 +103,13 @@ function TemplateCard({ t, onEdit }: { t: MessageTemplate; onEdit: () => void })
             onClick={async () => {
               const ok = await confirm({
                 title: `Delete "${t.name}"?`,
-                body: u.sent
-                  ? "Deals it was sent to keep its name, and Insights keeps its numbers."
-                  : t.is_current
-                    ? "Agents will have no message for this category until you pick another."
-                    : undefined,
+                body:
+                  [
+                    t.is_current && "It's the current one: agents won't send this kind of message until you pick another.",
+                    u.sent > 0 && "Deals it was sent to keep its name, and Insights keeps its numbers.",
+                  ]
+                    .filter(Boolean)
+                    .join(" ") || undefined,
                 confirm: "Delete",
                 danger: true,
               });
@@ -120,23 +126,34 @@ function TemplateCard({ t, onEdit }: { t: MessageTemplate; onEdit: () => void })
         </div>
       )}
       <p className="mt-2 rounded-lg bg-panel-2 px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap">{t.body}</p>
+      {t.placeholders.length > 0 && (
+        <div className="mt-2 text-xs text-muted">Agent fills in: {t.placeholders.map((p) => `{${p}}`).join(", ")}</div>
+      )}
     </div>
   );
 }
 
-function Editor({ category, template, onClose }: { category: string; template?: MessageTemplate; onClose: () => void }) {
+function Editor({ category, template, hasCurrent, onClose }: {
+  category: string;
+  template?: TemplateWithUsage;
+  hasCurrent: boolean;
+  onClose: () => void;
+}) {
   const { data: meta } = useMeta();
   const act = useTemplateActions();
   const [name, setName] = useState(template?.name ?? "");
   const [subject, setSubject] = useState(template?.subject ?? "");
   const [body, setBody] = useState(template?.body ?? "");
   const [current, setCurrent] = useState(false);
-  const email = EMAIL.has(category);
+  const email = !!meta?.email_categories.includes(category);
+  // A half-written message shouldn't vanish on Esc or a stray click outside.
+  const dirty = name !== (template?.name ?? "") || subject !== (template?.subject ?? "") || body !== (template?.body ?? "");
+  const missing = !name.trim() || !body.trim() || (email && !subject.trim());
   const busy = act.create.isPending || act.update.isPending;
   const catLabel = meta?.template_categories.find((c) => c.value === category)?.label ?? category;
 
   const save = async () => {
-    if (busy || !name.trim() || !body.trim()) return;
+    if (busy || missing) return;
     try {
       if (template) await act.update.mutateAsync({ id: template.id, name, body, ...(email ? { subject } : {}) });
       else await act.create.mutateAsync({ category, name, body, ...(email ? { subject } : {}), ...(current ? { is_current: true } : {}) });
@@ -147,7 +164,7 @@ function Editor({ category, template, onClose }: { category: string; template?: 
   };
 
   return (
-    <Modal open onClose={onClose} title={template ? `Edit ${catLabel.toLowerCase()}` : `New ${catLabel.toLowerCase()}`} width="max-w-2xl">
+    <Modal open onClose={onClose} title={template ? `Edit ${catLabel.toLowerCase()}` : `New ${catLabel.toLowerCase()}`} width="max-w-2xl" dismissable={!dirty}>
       <div className="space-y-3 p-5">
         <div>
           <span className="label">Name (for you and Insights)</span>
@@ -168,20 +185,22 @@ function Editor({ category, template, onClose }: { category: string; template?: 
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && save()}
             placeholder={"Hi {first_name},\n\n…"}
+            maxLength={10000}
           />
         </div>
         <div className="flex flex-wrap items-center gap-3">
           {!template && (
             <label className="flex items-center gap-2 text-[13px]">
-              <input type="checkbox" checked={current} onChange={(e) => setCurrent(e.target.checked)} />
-              Make it the current one
+              {/* With no current one in the category, the server makes the new variant current anyway. */}
+              <input type="checkbox" checked={current || !hasCurrent} disabled={!hasCurrent} onChange={(e) => setCurrent(e.target.checked)} />
+              {hasCurrent ? "Make it the current one" : "Becomes the current one (none is set)"}
             </label>
           )}
           <div className="ml-auto flex gap-1.5">
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={save} disabled={busy || !name.trim() || !body.trim()}>
+            <Button variant="primary" onClick={save} disabled={busy || missing}>
               Save
             </Button>
           </div>

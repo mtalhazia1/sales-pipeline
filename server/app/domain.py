@@ -110,5 +110,6 @@ def meta() -> dict:
         "lost_reasons": as_list(LOST_REASONS),
         "activity_kinds": as_list(ACTIVITY_KINDS),
         "template_categories": as_list(TEMPLATE_CATEGORIES),
+        "email_categories": sorted(EMAIL_CATEGORIES),
         "channel_by_host": CHANNEL_BY_HOST,
     }

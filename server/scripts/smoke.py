@@ -54,13 +54,17 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         r2 = structured(await c.call_tool("add_opportunity", {"company": "dup", "application_url": url.split("?")[0].replace("Smoke-Test-AI-agent_", "")}))
         ok(not r2["created"] and r2["opportunity"]["id"] == opp["id"], f"[{mode}] same posting (different URL form) deduplicated")
         cur = await c.call_tool("get_message_template", {"category": "linkedin"})
-        ok(not cur.is_error and structured(cur)["category"] == "linkedin" and structured(cur)["is_current"],
-           f"[{mode}] get_message_template returns the current LinkedIn message")
+        ok(not cur.is_error and structured(cur)["category"] == "linkedin" and structured(cur)["is_current"]
+           and isinstance(structured(cur)["placeholders"], list), f"[{mode}] get_message_template returns the current LinkedIn message")
         bad = await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "note", "summary": "x", "template_id": TEMPLATE["id"]})
         ok(bad.is_error and "my_message" in bad.content[0].text, f"[{mode}] template_id refused on a note")
         r3 = structured(await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "my_message",
                                                            "summary": "Sent proposal", "template_id": TEMPLATE["id"]}))
-        ok(r3["stage"] == "applied" and r3["waiting_on"] == "client", f"[{mode}] my_message: lead→applied, their move")
+        ok(r3["stage"] == "applied" and r3["waiting_on"] == "client" and r3["template_id"] == TEMPLATE["id"],
+           f"[{mode}] my_message: lead→applied, their move, first message in the summary")
+        bad = await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "my_message", "summary": "again",
+                                                 "template_id": TEMPLATE["other"]})
+        ok(bad.is_error and "already recorded" in bad.content[0].text, f"[{mode}] a second template on the same deal is refused")
         d = structured(await c.call_tool("get_opportunity", {"opportunity_id": opp["id"]}))
         ok(d["template"]["id"] == TEMPLATE["id"] and d["resume_url"].endswith("smoke-resume")
            and d["cover_letter_url"] and d["resume_version"] == "Smoke base", f"[{mode}] resume, cover letter, first message stored")
@@ -110,7 +114,13 @@ async def main():
     # Not made current (that would change what real agents send); it is current only if the category was empty.
     TEMPLATE.update(web.post("/api/templates", json={"category": "linkedin", "name": "Smoke Test variant",
                                                      "body": "Hi {first_name}", "subject": "dropped"}).json())
-    ok(TEMPLATE.get("id") and TEMPLATE["subject"] is None, "message template created (no subject on LinkedIn)")
+    ok(TEMPLATE.get("id") and TEMPLATE["subject"] is None and TEMPLATE["placeholders"] == ["first_name"],
+       "message template created (no subject on LinkedIn, placeholders listed)")
+    TEMPLATE["other"] = web.post("/api/templates", json={"category": "linkedin", "name": "Smoke Test variant 2", "body": "Yo"}).json()["id"]
+    bad = web.post("/api/templates", json={"category": "cold_email", "name": "Smoke Test x", "body": "y"})
+    ok(bad.status_code == 400 and "subject" in bad.json()["detail"], "an email without a subject is refused")
+    bad = web.post("/api/templates", json={"category": "linkedin", "name": "Smoke Test x", "body": "y", "is_current": "false"})
+    ok(bad.status_code == 400, "is_current must be a real boolean")
     bad = httpx.post(f"{BASE}/api/templates", json={"category": "linkedin", "name": "x", "body": "y"},
                      headers={"Authorization": f"Bearer {key['token']}"})
     ok(bad.status_code == 403, "agents can't write message templates")
@@ -193,7 +203,8 @@ async def main():
     feed = web.get("/api/activity", params={"limit": 50}).json()
     ok(all(e["opportunity_id"] not in created for e in feed), "deleted deals are hidden from the activity feed")
     web.delete(f"/api/templates/{TEMPLATE['id']}")
-    ok(all(t["id"] != TEMPLATE["id"] for t in web.get("/api/templates", params={"include_archived": "true"}).json()),
+    web.delete(f"/api/templates/{TEMPLATE['other']}")
+    ok(all(t["id"] not in (TEMPLATE["id"], TEMPLATE["other"]) for t in web.get("/api/templates", params={"include_archived": "true"}).json()),
        "template only used by deleted deals is removed outright")
     web.delete(f"/api/agents/keys/{key['id']}")
     after = httpx.get(f"{BASE}/api/agenda", headers={"Authorization": f"Bearer {key['token']}"})

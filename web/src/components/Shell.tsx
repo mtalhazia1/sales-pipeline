@@ -146,7 +146,7 @@ export function Shell() {
             key={i.to}
             to={i.to}
             end={i.to === "/"}
-            className={({ isActive }) => cx("relative flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium", isActive ? "text-accent" : "text-muted")}
+            className={({ isActive }) => cx("relative flex flex-col items-center gap-0.5 py-2 text-[10px] font-medium", isActive ? "text-accent" : "text-muted")}
           >
             {i.icon}
             {i.label}

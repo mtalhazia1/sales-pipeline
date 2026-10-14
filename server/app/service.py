@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update as sql_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -131,7 +131,7 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
 
 URL_FIELDS = ("application_url", "company_url", "contact_url", "url", "resume_url", "cover_letter_url")
 # Long enough for any real job post; bounded so one bad agent call can't store megabytes.
-MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "body": 10_000, "resume_version": 120,
+MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "summary": 10_000, "body": 10_000, "resume_version": 120,
            "name": 120, "subject": 300}
 
 
@@ -158,7 +158,7 @@ def _clean(field: str, value: Any) -> Any:
     if field == "company" and not value:
         raise ServiceError("company can't be empty.")
     if field == "template_id":
-        if isinstance(value, bool) or not isinstance(value, int | str) or not str(value).isdigit():
+        if isinstance(value, bool) or not isinstance(value, int | str) or not re.fullmatch(r"[1-9]\d{0,17}", str(value)):
             raise ServiceError("template_id is a message template id (from get_message_template).")
         value = int(value)
     if field == "fit":
@@ -271,6 +271,11 @@ def summary(opp: Opportunity) -> dict:
         "value": opp.value,
         "budget": opp.budget,
         "fit": opp.fit,
+        # So an agent can see from search results what was already sent (and not send a template twice).
+        "template_id": opp.template_id,
+        "resume_url": opp.resume_url,
+        "cover_letter_url": opp.cover_letter_url,
+        "resume_version": opp.resume_version,
         "needs_review": opp.needs_review,
         "created_by": opp.created_by,
         "created_at": iso(opp.created_at),
@@ -339,7 +344,7 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
 
     values = {k: _clean(k, v) for k, v in data.items() if k in EDITABLE}
     if values.get("template_id") is not None:
-        _template(s, values["template_id"])
+        _assignable_template(s, values["template_id"], None)
     values.setdefault("channel", channel_for_url(values.get("application_url")) or "other")
     values.setdefault("stage", "lead")
     if "company" not in values:
@@ -397,7 +402,7 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     for field, raw in data.items():
         new = _clean(field, raw)
         if field == "template_id" and new is not None:
-            _template(s, new)
+            _assignable_template(s, new, opp.template_id)
         old = getattr(opp, field)
         if new != old:
             changes[field] = [old, new]
@@ -459,7 +464,12 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
         raise ServiceError("template_id only goes with kind='my_message' (the first message you sent).")
     opp = _get(s, opp_id)
     if template_id is not None:
-        _template(s, _clean("template_id", template_id))
+        template_id = _clean("template_id", template_id)
+        _assignable_template(s, template_id, opp.template_id)
+        if opp.template_id not in (None, template_id):
+            raise ServiceError(f"This deal's first message is already recorded ({opp.template.name}). Templates are for "
+                               "first contact only — log this message again without template_id.")
+    body = _clean("summary", body)  # the MCP parameter name, so a too-long error makes sense to the agent
     when = parse_when(occurred_at, get_timezone(s)) or utcnow()
     if when > utcnow() + timedelta(minutes=10):
         raise ServiceError("occurred_at is in the future — log things when they happen. For a call that's booked "
@@ -468,7 +478,7 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     before = {"stage": opp.stage, "waiting_on": opp.waiting_on, "inbound": opp.inbound, "lost_reason": opp.lost_reason,
               "template_id": opp.template_id}
     if template_id is not None:
-        opp.template_id = int(template_id)
+        opp.template_id = template_id
     if kind == "client_message":
         if opp.stage == "lead":
             opp.inbound = opp.inbound or opp.applied_at is None
@@ -497,7 +507,7 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     _touch(opp, actor, activity=False)
     if kind != "note":  # a note is bookkeeping, not contact with the client
         opp.last_activity_at = max(opp.last_activity_at, when)
-    _event(s, opp, actor, kind, (body or "").strip() or None, _loggable(changes, s) or None, occurred_at=when)
+    _event(s, opp, actor, kind, body, _loggable(changes, s) or None, occurred_at=when)
     return opp
 
 
@@ -592,8 +602,14 @@ def template_ref(t: MessageTemplate | None) -> dict | None:
     return {"id": t.id, "category": t.category, "name": t.name} if t else None
 
 
+def placeholders(t: MessageTemplate) -> list[str]:
+    """The {names} the agent must fill, in order of first use."""
+    return list(dict.fromkeys(re.findall(r"\{(\w+)\}", f"{t.subject or ''}\n{t.body}")))
+
+
 def template_dict(t: MessageTemplate, usage: dict | None = None) -> dict:
     return {"id": t.id, "category": t.category, "name": t.name, "subject": t.subject, "body": t.body,
+            "placeholders": placeholders(t),
             "is_current": t.is_current, "archived": t.archived_at is not None,
             "created_at": iso(t.created_at), "updated_at": iso(t.updated_at),
             **({"usage": usage} if usage is not None else {})}
@@ -606,30 +622,47 @@ def _template(s: Session, template_id: int) -> MessageTemplate:
     return t
 
 
+def _assignable_template(s: Session, template_id: int, current_id: int | None) -> MessageTemplate:
+    """A deal may point at a live variant, or keep the (possibly since-deleted) one it already has."""
+    t = s.get(MessageTemplate, template_id)
+    if not t or (t.archived_at and t.id != current_id):
+        raise ServiceError(f"Message template {template_id} doesn't exist or was deleted by the owner. If you sent it, "
+                           "log the message without template_id; call get_message_template before the next one.", 404)
+    return t
+
+
 def _template_fields(data: dict, category: str) -> dict:
     unknown = set(data) - {"name", "subject", "body", "is_current", "category"}
     if unknown:
         raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    for k in ("name", "subject", "body"):
+        if k in data and not isinstance(data[k], str | None):
+            raise ServiceError(f"{k} must be text.")
+    if "is_current" in data and not isinstance(data["is_current"], bool):
+        raise ServiceError("is_current is true or false.")
     out = {k: _clean(k, data[k]) for k in ("name", "subject", "body") if k in data}
     for k in ("name", "body"):
         if k in out and not out[k]:
             raise ServiceError(f"{k} can't be empty.")
-    if category not in domain.EMAIL_CATEGORIES:
+    if category in domain.EMAIL_CATEGORIES:
+        if "subject" in out and not out["subject"]:
+            raise ServiceError("An email needs a subject line.")
+    else:
         out.pop("subject", None)  # LinkedIn messages have no subject line
     if "is_current" in data:
-        out["is_current"] = bool(data["is_current"])
+        out["is_current"] = data["is_current"]
     return out
 
 
 def _make_current(s: Session, t: MessageTemplate) -> None:
-    for other in s.scalars(select(MessageTemplate).where(MessageTemplate.category == t.category,
-                                                         MessageTemplate.id != t.id, MessageTemplate.is_current)):
-        other.is_current = False
+    # One UPDATE (it takes the write lock), so two "use this" clicks can't leave two current variants.
+    s.execute(sql_update(MessageTemplate).where(MessageTemplate.category == t.category, MessageTemplate.id != t.id)
+              .values(is_current=False).execution_options(synchronize_session="fetch"))
     t.is_current = True
 
 
 def templates(s: Session, *, include_archived: bool = False) -> list[dict]:
-    """Every variant with how its first messages did (all time, outbound deals only)."""
+    """Every variant with how its first messages did (all time, outbound deals that were sent)."""
     stmt = select(MessageTemplate).order_by(MessageTemplate.category, MessageTemplate.id)
     if not include_archived:
         stmt = stmt.where(MessageTemplate.archived_at.is_(None))
@@ -637,7 +670,7 @@ def templates(s: Session, *, include_archived: bool = False) -> list[dict]:
                                                Opportunity.archived_at.is_(None))).unique().all()
     out = []
     for t in s.scalars(stmt):
-        mine = [o for o in used if o.template_id == t.id and not o.inbound]
+        mine = [o for o in used if o.template_id == t.id and not o.inbound and o.applied_at]
         replied = sum(1 for o in mine if o.replied_at)
         out.append(template_dict(t, {"sent": len(mine), "replied": replied, "calls": sum(1 for o in mine if o.call_at),
                                      "won": sum(1 for o in mine if o.stage == "won"),
@@ -663,6 +696,8 @@ def create_template(s: Session, data: dict) -> MessageTemplate:
     fields = _template_fields(data, category)
     if not fields.get("name") or not fields.get("body"):
         raise ServiceError("A message needs a name and a body.")
+    if category in domain.EMAIL_CATEGORIES and not fields.get("subject"):
+        raise ServiceError("An email needs a subject line.")
     now = utcnow()
     t = MessageTemplate(category=category, created_at=now, updated_at=now, **{**fields, "is_current": False})
     s.add(t)
@@ -865,7 +900,9 @@ def stats(s: Session, days: int | None = 90) -> dict:
 
     def variant_label(tid: int) -> str:
         t = variants.get(tid)
-        return f"{domain.label(domain.TEMPLATE_CATEGORIES, t.category)} · {t.name}" if t else f"#{tid}"
+        if not t:
+            return f"#{tid}"
+        return f"{domain.label(domain.TEMPLATE_CATEGORIES, t.category)} · {t.name}" + (" (deleted)" if t.archived_at else "")
 
     open_opps = [o for o in all_opps if o.stage in domain.OPEN_STAGES]
     return {

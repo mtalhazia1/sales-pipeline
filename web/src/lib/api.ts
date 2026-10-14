@@ -11,6 +11,7 @@ export type Meta = {
   lost_reasons: Option[];
   activity_kinds: Option[];
   template_categories: Option[];
+  email_categories: string[];
   channel_by_host: Record<string, string>;
   timezone: string;
   timezone_set: boolean;
@@ -35,6 +36,10 @@ export type Summary = {
   value: number | null;
   budget: string | null;
   fit: number | null;
+  template_id: number | null;
+  resume_url: string | null;
+  cover_letter_url: string | null;
+  resume_version: string | null;
   needs_review: boolean;
   created_by: string;
   created_at: string;
@@ -71,9 +76,6 @@ export type Detail = Summary & {
   contact_url: string | null;
   description: string | null;
   notes: string | null;
-  resume_url: string | null;
-  resume_version: string | null;
-  cover_letter_url: string | null;
   template: TemplateRef | null;
   updated_at: string;
   applied_at: string | null;
@@ -91,10 +93,15 @@ export type TemplateRef = { id: number; category: string; name: string };
 export type MessageTemplate = TemplateRef & {
   subject: string | null;
   body: string;
+  placeholders: string[];
   is_current: boolean;
   archived: boolean;
   created_at: string;
   updated_at: string;
+};
+
+/** GET /templates adds how each variant did (all time, sent outbound deals). */
+export type TemplateWithUsage = MessageTemplate & {
   usage: { sent: number; replied: number; calls: number; won: number; reply_rate: number | null };
 };
 

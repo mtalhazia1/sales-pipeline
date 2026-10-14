@@ -44,12 +44,16 @@ How to work:
   an AI / full-stack software shop). Pass "" to clear a text field.
 - Job applications: store the tailored resume and cover letter in the owner's Google Drive and pass
   their links as resume_url / cover_letter_url (plus resume_version = the base resume you tailored
-  from), on add_opportunity or update_opportunity.
-- First contact on LinkedIn, by cold email or by warm email (someone who knows the owner or came
-  through a network/referral): call get_message_template for that category and send its body (and
-  subject) word for word — only fill in the {placeholders} like {first_name} and {company}. Then
-  log_activity kind=my_message with that template_id and the text you actually sent. Never use a
-  template for replies — the owner answers those personally. Upwork proposals don't use templates.
+  from, same label every time). add_opportunity ignores them when it returns created=false — then
+  use update_opportunity.
+- First contact on LinkedIn, by cold email or by warm email: only when the deal's template_id is
+  still empty (find_opportunities shows it). Warm = they know the owner, or network is referral /
+  firstglance; anyone else (including LinkedIn connections) is cold. Call get_message_template for
+  the category and send its subject and body word for word, filling only its `placeholders` (e.g.
+  {first_name}, {company}) with facts you verified — if you can't fill one, don't send: notify_owner.
+  Then log_activity kind=my_message with that template_id and the exact text you sent. Never use a
+  template for replies or follow-ups — the owner handles those (set_reminder for a follow-up).
+  Upwork proposals don't use templates.
 - Dates: YYYY-MM-DD (means 09:00 in the owner's timezone) or ISO-8601 datetime; get_agenda returns
   today's date and the timezone.
 - When something needs the owner to act or decide (a client question only they can answer, an offer,
@@ -190,7 +194,7 @@ def update_opportunity(
     resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
     resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
     cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
-    template_id: Annotated[int | None, Field(description="The first-contact message template that was sent (normally set via log_activity)")] = None,
+    template_id: Annotated[int | None, Field(ge=1, description="The first-contact message template that was sent (normally set via log_activity)")] = None,
 ) -> Result:
     """Change fields of an opportunity. Only the fields you pass are changed."""
     fields = {k: v for k, v in locals().items() if v is not None and k != "opportunity_id"}
@@ -203,9 +207,9 @@ def update_opportunity(
 def log_activity(
     opportunity_id: int,
     kind: Annotated[ActivityKind, Field(description="client_message | my_message | call | note")],
-    summary: Annotated[str, Field(description="What was said or happened, in a sentence or two")],
+    summary: Annotated[str, Field(description="What was said or happened, in a sentence or two; for a templated first message, the exact text sent")],
     occurred_at: Annotated[str | None, Field(description="When it happened, if earlier (default now); never in the future")] = None,
-    template_id: Annotated[int | None, Field(description="kind=my_message only: id of the get_message_template message you sent")] = None,
+    template_id: Annotated[int | None, Field(ge=1, description="kind=my_message only: id of the get_message_template message you sent (first contact only)")] = None,
 ) -> Result:
     """Record a message, call or note on the timeline; it moves the deal along by itself:
     client_message → stage replied (if earlier) and it's the owner's move; my_message → a lead becomes
@@ -219,9 +223,10 @@ def log_activity(
 def get_message_template(
     category: Annotated[TemplateCategory, Field(description="linkedin | cold_email | warm_email (warm = they know the owner or came via a network/referral)")],
 ) -> Result:
-    """The owner's current first-contact message for a category: id, name, subject (emails), body.
-    Send it word for word, filling only the {placeholders}; then log_activity kind=my_message with
-    template_id=id. First contact only — never for replies."""
+    """The owner's current first-contact message for a category: id, name, subject (emails), body and
+    the placeholders to fill. Send it word for word, filling only the placeholders (with verified facts —
+    if you can't, don't send; notify_owner); then log_activity kind=my_message with template_id=id.
+    First contact only — never for replies or follow-ups."""
     return _run(lambda s: service.template_dict(service.current_template(s, category)))
 
 
@@ -274,6 +279,7 @@ def get_agenda() -> Result:
 
 @mcp.tool(annotations=READ)
 def pipeline_stats(days: Annotated[int | None, Field(ge=1, description="Look-back window in days (default 90); null = all time")] = 90) -> Result:
-    """Funnel and conversion rates (reply, win) by channel, network and kind; open pipeline by stage;
+    """Funnel and conversion rates (reply, win) by channel, network and kind, and by first-contact
+    message variant (by_template) and base resume (by_resume_version); open pipeline by stage;
     12 weeks of activity."""
     return _run(service.stats, days)

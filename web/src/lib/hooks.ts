@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, type Agenda, type AppNotification, type Detail, type MessageTemplate, type Reminder, type Summary } from "./api";
+import { api, type Agenda, type AppNotification, type Detail, type MessageTemplate, type Reminder, type TemplateWithUsage, type Summary } from "./api";
 import { useToast } from "../components/ui";
 
 export function useAgenda() {
@@ -120,7 +120,7 @@ export function useDrawer() {
 export function useTemplates(includeArchived = false) {
   return useQuery({
     queryKey: ["templates", includeArchived],
-    queryFn: () => api.get<MessageTemplate[]>(`/templates${includeArchived ? "?include_archived=true" : ""}`),
+    queryFn: () => api.get<TemplateWithUsage[]>(`/templates${includeArchived ? "?include_archived=true" : ""}`),
   });
 }
 
@@ -133,12 +133,13 @@ export function useTemplateActions() {
       mutationFn: fn,
       onSuccess: () => {
         qc.invalidateQueries({ queryKey: ["templates"] });
+        qc.invalidateQueries({ queryKey: ["stats"] }); // Insights labels variants by name
         if (done) toast.ok(done);
       },
       onError: (e) => toast.error(e),
     });
   return {
-    create: m((body: { category: string; name: string; subject?: string; body: string }) => api.post<MessageTemplate>("/templates", body), "Message added"),
+    create: m((body: { category: string; name: string; subject?: string; body: string; is_current?: boolean }) => api.post<MessageTemplate>("/templates", body), "Message added"),
     update: m(({ id, ...patch }: { id: number } & Partial<Pick<MessageTemplate, "name" | "subject" | "body" | "is_current">>) =>
       api.patch<MessageTemplate>(`/templates/${id}`, patch),
     ),
