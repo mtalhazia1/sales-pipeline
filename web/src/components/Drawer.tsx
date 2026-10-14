@@ -6,7 +6,7 @@ import {
 import { ApiError, type Detail, type Option, type TimelineEvent } from "../lib/api";
 import { ago, due, hostOf, href, inDays, money, nextMonday, parseMoney, snoozed } from "../lib/format";
 import { labelOf, useMeta } from "../lib/meta";
-import { useDrawer, useOppActions, useOpportunity } from "../lib/hooks";
+import { useDrawer, useOppActions, useOpportunity, useTemplates } from "../lib/hooks";
 import { Button, Fit, Modal, Segmented, Select, Spinner, StagePill, YourMove, cx, useToast } from "./ui";
 import { DUE_TONE } from "./OppRow";
 import { useConfirm } from "./confirm";
@@ -236,6 +236,8 @@ function DrawerBody({ opp }: { opp: Detail }) {
           </div>
         </Section>
 
+        <Outreach opp={opp} save={save} />
+
         <Section title="Notes">
           <InlineArea value={opp.notes} onSave={(v, revert) => save({ notes: v }, revert)} placeholder="Anything worth remembering — pricing, red flags, what they care about…" />
         </Section>
@@ -253,6 +255,48 @@ function DrawerBody({ opp }: { opp: Detail }) {
 
       <LostDialog open={lostOpen} onClose={() => setLostOpen(false)} onPick={(reason) => save({ stage: "lost", lost_reason: reason })} />
     </>
+  );
+}
+
+/** What was sent: the first-contact message variant and, for job applications, the tailored documents. */
+function Outreach({ opp, save }: { opp: Detail; save: (patch: Record<string, unknown>, revert?: () => void) => void }) {
+  const { data: meta } = useMeta();
+  const { data: templates } = useTemplates(true);
+  const job = opp.kind === "job";
+  const options = (templates ?? [])
+    .filter((t) => !t.archived || t.id === opp.template?.id)
+    .map((t) => ({ value: String(t.id), label: `${labelOf(meta?.template_categories, t.category)} · ${t.name}${t.archived ? " (deleted)" : ""}` }));
+  if (!job && !opp.template && !options.length) return null;
+  return (
+    <Section title={job ? "Application" : "Outreach"}>
+      <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+        {(options.length > 0 || opp.template) && (
+          <div className="sm:col-span-2">
+            <Field label="First message sent">
+              <Select
+                value={opp.template ? String(opp.template.id) : ""}
+                onChange={(v) => save({ template_id: v ? Number(v) : null })}
+                options={options}
+                placeholder="— none / written by hand"
+              />
+            </Field>
+          </div>
+        )}
+        {job && (
+          <>
+            <Field label="Resume (tailored copy)">
+              <LinkInput value={opp.resume_url} onSave={(v, revert) => save({ resume_url: v }, revert)} placeholder="docs.google.com/…" />
+            </Field>
+            <Field label="Cover letter">
+              <LinkInput value={opp.cover_letter_url} onSave={(v, revert) => save({ cover_letter_url: v }, revert)} placeholder="docs.google.com/…" />
+            </Field>
+            <Field label="Resume version (base it was tailored from)">
+              <InlineInput value={opp.resume_version} onSave={(v, revert) => save({ resume_version: v }, revert)} placeholder="AI engineer v2" />
+            </Field>
+          </>
+        )}
+      </div>
+    </Section>
   );
 }
 

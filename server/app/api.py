@@ -188,11 +188,12 @@ class ActivityIn(BaseModel):
     kind: str
     body: str | None = None
     occurred_at: str | None = None
+    template_id: int | None = None
 
 
 @router.post("/opportunities/{opp_id}/activities")
 def log_activity(opp_id: int, body: ActivityIn, c: Ctx = Depends(ctx), s: Session = Depends(db)):
-    opp = service.log_activity(s, c.actor, opp_id, body.kind, body.body, body.occurred_at)
+    opp = service.log_activity(s, c.actor, opp_id, body.kind, body.body, body.occurred_at, body.template_id)
     s.flush()
     return service.detail(s, opp)
 
@@ -254,6 +255,29 @@ class ReadIn(BaseModel):
 @router.post("/notifications/read")
 def mark_read(body: ReadIn, c: Ctx = Depends(human), s: Session = Depends(db)):
     return {"updated": service.mark_notifications_read(s, body.ids, body.read)}
+
+
+# ---------------------------------------------------------------- first-contact message templates
+
+@router.get("/templates")
+def list_templates(include_archived: bool = False, c: Ctx = Depends(ctx), s: Session = Depends(db)):
+    return service.templates(s, include_archived=include_archived)
+
+
+@router.post("/templates")
+def create_template(body: dict[str, Any], c: Ctx = Depends(human), s: Session = Depends(db)):
+    return service.template_dict(service.create_template(s, body))
+
+
+@router.patch("/templates/{template_id}")
+def update_template(template_id: int, body: dict[str, Any], c: Ctx = Depends(human), s: Session = Depends(db)):
+    return service.template_dict(service.update_template(s, template_id, body))
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: int, c: Ctx = Depends(human), s: Session = Depends(db)):
+    service.delete_template(s, template_id)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- dashboards

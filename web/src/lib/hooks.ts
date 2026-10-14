@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, type Agenda, type AppNotification, type Detail, type Reminder, type Summary } from "./api";
+import { api, type Agenda, type AppNotification, type Detail, type MessageTemplate, type Reminder, type Summary } from "./api";
 import { useToast } from "../components/ui";
 
 export function useAgenda() {
@@ -35,6 +35,7 @@ export function useOppActions() {
     qc.invalidateQueries({ queryKey: ["agenda"] });
     qc.invalidateQueries({ queryKey: ["activity"] });
     qc.invalidateQueries({ queryKey: ["stats"] });
+    qc.invalidateQueries({ queryKey: ["templates"] }); // per-variant reply counts
     if (id != null) qc.invalidateQueries({ queryKey: ["opp", id] });
   };
   const m = <A, R>(fn: (a: A) => Promise<R>, done?: string | ((a: A) => string | undefined)) =>
@@ -113,5 +114,34 @@ export function useDrawer() {
         },
         { replace: true },
       ),
+  };
+}
+
+export function useTemplates(includeArchived = false) {
+  return useQuery({
+    queryKey: ["templates", includeArchived],
+    queryFn: () => api.get<MessageTemplate[]>(`/templates${includeArchived ? "?include_archived=true" : ""}`),
+  });
+}
+
+/** Create / edit / pick current / delete first-contact message variants. */
+export function useTemplateActions() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const m = <A, R>(fn: (a: A) => Promise<R>, done?: string) =>
+    useMutation({
+      mutationFn: fn,
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ["templates"] });
+        if (done) toast.ok(done);
+      },
+      onError: (e) => toast.error(e),
+    });
+  return {
+    create: m((body: { category: string; name: string; subject?: string; body: string }) => api.post<MessageTemplate>("/templates", body), "Message added"),
+    update: m(({ id, ...patch }: { id: number } & Partial<Pick<MessageTemplate, "name" | "subject" | "body" | "is_current">>) =>
+      api.patch<MessageTemplate>(`/templates/${id}`, patch),
+    ),
+    remove: m(({ id }: { id: number }) => api.del(`/templates/${id}`), "Message deleted"),
   };
 }

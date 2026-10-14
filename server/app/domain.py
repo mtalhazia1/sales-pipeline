@@ -14,6 +14,9 @@ LostReason = Literal["rejected", "no_response", "declined", "filled", "other"]
 WaitingOn = Literal["me", "client"]
 # Things that happen to an opportunity, logged by a human or an agent.
 ActivityKind = Literal["client_message", "my_message", "call", "note"]
+# First-contact messages the owner writes (a few variants each, one "current"); agents send the current
+# one word for word. Replies are the owner's own.
+TemplateCategory = Literal["linkedin", "cold_email", "warm_email"]
 
 KINDS: list[tuple[str, str]] = [("job", "Job"), ("project", "Project")]
 
@@ -60,6 +63,14 @@ ACTIVITY_KINDS: list[tuple[str, str]] = [
     ("note", "Note"),
 ]
 
+TEMPLATE_CATEGORIES: list[tuple[str, str]] = [
+    ("linkedin", "LinkedIn message"),
+    ("cold_email", "Cold email"),
+    ("warm_email", "Warm email"),
+]
+# Categories whose messages have a subject line.
+EMAIL_CATEGORIES = {"cold_email", "warm_email"}
+
 STAGE_ORDER = {key: i for i, (key, _) in enumerate(STAGES)}
 OPEN_STAGES = {"lead", "matcher", "applied", "replied", "call", "proposal"}
 CLOSED_STAGES = {"won", "lost"}
@@ -98,5 +109,6 @@ def meta() -> dict:
         "open_stages": [k for k, _ in STAGES if k in OPEN_STAGES],
         "lost_reasons": as_list(LOST_REASONS),
         "activity_kinds": as_list(ACTIVITY_KINDS),
+        "template_categories": as_list(TEMPLATE_CATEGORIES),
         "channel_by_host": CHANNEL_BY_HOST,
     }

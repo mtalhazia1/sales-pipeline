@@ -23,6 +23,7 @@ ok = lambda cond, msg: print(("  ✓ " if cond else "  ✗ FAIL ") + msg) or (co
 
 URLS: dict[int, str] = {}
 NOTIFS: list[int] = []
+TEMPLATE: dict = {}
 
 
 def structured(result):
@@ -43,15 +44,26 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         url = f"https://www.upwork.com/jobs/Smoke-Test-AI-agent_~01{secrets.token_hex(8)}/?referrer_url_path=x"
         r = structured(await c.call_tool("add_opportunity", {
             "company": f"Smoke Test {mode}", "title": "AI agent build", "application_url": url,
-            "budget": "$60/hr", "fit": 4, "reminder_at": "2030-01-02", "reminder_note": "Check"}))
+            "budget": "$60/hr", "fit": 4, "reminder_at": "2030-01-02", "reminder_note": "Check",
+            "resume_url": "https://docs.google.com/document/d/smoke-resume", "resume_version": "Smoke base",
+            "cover_letter_url": "docs.google.com/document/d/smoke-cover"}))
         opp = r["opportunity"]
         created.append(opp["id"])
         URLS[opp["id"]] = url
         ok(r["created"] and opp["channel"] == "upwork" and opp["needs_review"], f"[{mode}] add: channel inferred, review flagged")
         r2 = structured(await c.call_tool("add_opportunity", {"company": "dup", "application_url": url.split("?")[0].replace("Smoke-Test-AI-agent_", "")}))
         ok(not r2["created"] and r2["opportunity"]["id"] == opp["id"], f"[{mode}] same posting (different URL form) deduplicated")
-        r3 = structured(await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "my_message", "summary": "Sent proposal"}))
+        cur = await c.call_tool("get_message_template", {"category": "linkedin"})
+        ok(not cur.is_error and structured(cur)["category"] == "linkedin" and structured(cur)["is_current"],
+           f"[{mode}] get_message_template returns the current LinkedIn message")
+        bad = await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "note", "summary": "x", "template_id": TEMPLATE["id"]})
+        ok(bad.is_error and "my_message" in bad.content[0].text, f"[{mode}] template_id refused on a note")
+        r3 = structured(await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "my_message",
+                                                           "summary": "Sent proposal", "template_id": TEMPLATE["id"]}))
         ok(r3["stage"] == "applied" and r3["waiting_on"] == "client", f"[{mode}] my_message: lead→applied, their move")
+        d = structured(await c.call_tool("get_opportunity", {"opportunity_id": opp["id"]}))
+        ok(d["template"]["id"] == TEMPLATE["id"] and d["resume_url"].endswith("smoke-resume")
+           and d["cover_letter_url"] and d["resume_version"] == "Smoke base", f"[{mode}] resume, cover letter, first message stored")
         r4 = structured(await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "client_message", "summary": "Interested!"}))
         ok(r4["stage"] == "replied" and r4["waiting_on"] == "me", f"[{mode}] client_message: →replied, your move")
         bad = await c.call_tool("update_opportunity", {"opportunity_id": opp["id"], "stage": "matcher"})
@@ -95,6 +107,14 @@ async def main():
     key = web.post("/api/agents/keys", json={"name": "Smoke key"}).json()
     ok(key["token"].startswith("sp_"), "API key created")
 
+    # Not made current (that would change what real agents send); it is current only if the category was empty.
+    TEMPLATE.update(web.post("/api/templates", json={"category": "linkedin", "name": "Smoke Test variant",
+                                                     "body": "Hi {first_name}", "subject": "dropped"}).json())
+    ok(TEMPLATE.get("id") and TEMPLATE["subject"] is None, "message template created (no subject on LinkedIn)")
+    bad = httpx.post(f"{BASE}/api/templates", json={"category": "linkedin", "name": "x", "body": "y"},
+                     headers={"Authorization": f"Bearer {key['token']}"})
+    ok(bad.status_code == 403, "agents can't write message templates")
+
     created = []
     print("MCP with API key — 2026-07-28 (modern) and handshake (legacy) clients")
     created += await mcp_calls(key["token"], "auto")
@@ -102,6 +122,11 @@ async def main():
 
     feed = web.get("/api/activity", params={"actor_type": "agent", "limit": 5}).json()
     ok(feed and feed[0]["actor_name"] == "Smoke key", "activity feed attributes the agent by key name")
+    st = web.get("/api/stats", params={"days": 30}).json()
+    ok(any(r["key"] == str(TEMPLATE["id"]) and r["applied"] == 2 for r in st["by_template"]), "Insights: funnel per first message")
+    ok(any(r["key"] == "Smoke base" for r in st["by_resume_version"]), "Insights: funnel per resume version")
+    usage = next(t for t in web.get("/api/templates").json() if t["id"] == TEMPLATE["id"])["usage"]
+    ok(usage["sent"] == 2 and usage["replied"] == 2, "Messages page: per-variant reply counts")
     rv = web.post(f"/api/opportunities/{created[0]}/review").json()
     ok(rv["reviewed"] == 1, "human review clears the flag")
     unread = web.get("/api/notifications", params={"unread": "true"}).json()
@@ -167,6 +192,9 @@ async def main():
     ok(not again["created"] and again["opportunity"]["deleted"], "re-adding a deleted posting does not revive it")
     feed = web.get("/api/activity", params={"limit": 50}).json()
     ok(all(e["opportunity_id"] not in created for e in feed), "deleted deals are hidden from the activity feed")
+    web.delete(f"/api/templates/{TEMPLATE['id']}")
+    ok(all(t["id"] != TEMPLATE["id"] for t in web.get("/api/templates", params={"include_archived": "true"}).json()),
+       "template only used by deleted deals is removed outright")
     web.delete(f"/api/agents/keys/{key['id']}")
     after = httpx.get(f"{BASE}/api/agenda", headers={"Authorization": f"Bearer {key['token']}"})
     ok(after.status_code == 401, "revoked key refused")

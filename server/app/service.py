@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import domain
 from app.db import iso, utcnow
-from app.models import Event, Notification, Opportunity, Reminder, Setting
+from app.models import Event, MessageTemplate, Notification, Opportunity, Reminder, Setting
 
 
 class ServiceError(Exception):
@@ -44,6 +44,7 @@ EDITABLE = {
     "kind", "company", "title", "application_url", "company_url", "channel", "network", "stage",
     "inbound", "waiting_on", "lost_reason", "contact_name", "contact_email", "contact_url",
     "budget", "value", "fit", "description", "notes",
+    "resume_url", "resume_version", "cover_letter_url", "template_id",
 }
 ENUMS = {
     "kind": domain.KINDS, "channel": domain.CHANNELS, "network": domain.NETWORKS,
@@ -128,9 +129,10 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
-URL_FIELDS = ("application_url", "company_url", "contact_url", "url")
+URL_FIELDS = ("application_url", "company_url", "contact_url", "url", "resume_url", "cover_letter_url")
 # Long enough for any real job post; bounded so one bad agent call can't store megabytes.
-MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000}
+MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "body": 10_000, "resume_version": 120,
+           "name": 120, "subject": 300}
 
 
 def _clean(field: str, value: Any) -> Any:
@@ -155,6 +157,10 @@ def _clean(field: str, value: Any) -> Any:
         raise ServiceError(f"{field} must be one of: {allowed} (got {value!r}).")
     if field == "company" and not value:
         raise ServiceError("company can't be empty.")
+    if field == "template_id":
+        if isinstance(value, bool) or not isinstance(value, int | str) or not str(value).isdigit():
+            raise ServiceError("template_id is a message template id (from get_message_template).")
+        value = int(value)
     if field == "fit":
         try:
             value = int(value)
@@ -219,6 +225,15 @@ def _event(s: Session, opp: Opportunity, actor: Actor, kind: str, body: str | No
     return ev
 
 
+def _loggable(changes: dict, s: Session) -> dict:
+    """The timeline shows which message was sent by name, not by id."""
+    if "template_id" in changes:
+        name = lambda tid: (t.name if (t := s.get(MessageTemplate, tid)) else f"#{tid}") if tid else None  # noqa: E731
+        changes = {**changes, "first_message": [name(v) for v in changes["template_id"]]}
+        del changes["template_id"]
+    return changes
+
+
 def _touch(opp: Opportunity, actor: Actor, activity: bool = True) -> None:
     now = utcnow()
     opp.updated_at = now
@@ -277,6 +292,10 @@ def detail(s: Session, opp: Opportunity, events_limit: int = 100) -> dict:
         "contact_url": opp.contact_url,
         "description": opp.description,
         "notes": opp.notes,
+        "resume_url": opp.resume_url,
+        "resume_version": opp.resume_version,
+        "cover_letter_url": opp.cover_letter_url,
+        "template": template_ref(opp.template),
         "updated_at": iso(opp.updated_at),
         "applied_at": iso(opp.applied_at),
         "replied_at": iso(opp.replied_at),
@@ -319,6 +338,8 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
         return existing, False
 
     values = {k: _clean(k, v) for k, v in data.items() if k in EDITABLE}
+    if values.get("template_id") is not None:
+        _template(s, values["template_id"])
     values.setdefault("channel", channel_for_url(values.get("application_url")) or "other")
     values.setdefault("stage", "lead")
     if "company" not in values:
@@ -339,8 +360,8 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
         if existing := find_duplicate(s, data.get("application_url")):
             return existing, False
         raise
-    _event(s, opp, actor, "created", None, {k: [None, v] for k, v in values.items()
-                                            if k not in ("description", "notes")})
+    _event(s, opp, actor, "created", None, _loggable({k: [None, v] for k, v in values.items()
+                                                      if k not in ("description", "notes")}, s))
     if data.get("reminder_at"):
         add_reminder(s, actor, opp.id, data["reminder_at"], data.get("reminder_note") or "Follow up")
     return opp, True
@@ -375,6 +396,8 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     changes: dict[str, list] = {}
     for field, raw in data.items():
         new = _clean(field, raw)
+        if field == "template_id" and new is not None:
+            _template(s, new)
         old = getattr(opp, field)
         if new != old:
             changes[field] = [old, new]
@@ -414,7 +437,7 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     logged |= {k: [before[k], getattr(opp, k)] for k in derived if k not in logged and getattr(opp, k) != before[k]}
     if closed_reminders:
         logged["reminders_closed"] = [None, closed_reminders]
-    _event(s, opp, actor, "updated", None, logged)
+    _event(s, opp, actor, "updated", None, _loggable(logged, s))
     return opp
 
 
@@ -425,19 +448,27 @@ def archive(s: Session, actor: Actor, opp_id: int) -> None:
 
 
 def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | None,
-                 occurred_at: str | datetime | None = None) -> Opportunity:
+                 occurred_at: str | datetime | None = None, template_id: int | None = None) -> Opportunity:
     """Record something that happened and move the deal along the obvious way:
     a client message → stage Replied (if earlier) and it's your move; your message → their move;
-    a call → stage Call booked (if earlier)."""
+    a call → stage Call booked (if earlier). `template_id` on a my_message records which
+    first-contact message variant was sent."""
     if kind not in {k for k, _ in domain.ACTIVITY_KINDS}:
         raise ServiceError(f"kind must be one of: {', '.join(k for k, _ in domain.ACTIVITY_KINDS)}.")
+    if template_id is not None and kind != "my_message":
+        raise ServiceError("template_id only goes with kind='my_message' (the first message you sent).")
     opp = _get(s, opp_id)
+    if template_id is not None:
+        _template(s, _clean("template_id", template_id))
     when = parse_when(occurred_at, get_timezone(s)) or utcnow()
     if when > utcnow() + timedelta(minutes=10):
         raise ServiceError("occurred_at is in the future — log things when they happen. For a call that's booked "
                            "for later, log kind='call' now and set_reminder for the call time.")
     order = domain.STAGE_ORDER
-    before = {"stage": opp.stage, "waiting_on": opp.waiting_on, "inbound": opp.inbound, "lost_reason": opp.lost_reason}
+    before = {"stage": opp.stage, "waiting_on": opp.waiting_on, "inbound": opp.inbound, "lost_reason": opp.lost_reason,
+              "template_id": opp.template_id}
+    if template_id is not None:
+        opp.template_id = int(template_id)
     if kind == "client_message":
         if opp.stage == "lead":
             opp.inbound = opp.inbound or opp.applied_at is None
@@ -466,7 +497,7 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     _touch(opp, actor, activity=False)
     if kind != "note":  # a note is bookkeeping, not contact with the client
         opp.last_activity_at = max(opp.last_activity_at, when)
-    _event(s, opp, actor, kind, (body or "").strip() or None, changes or None, occurred_at=when)
+    _event(s, opp, actor, kind, (body or "").strip() or None, _loggable(changes, s) or None, occurred_at=when)
     return opp
 
 
@@ -553,6 +584,122 @@ def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
     _touch(r.opportunity, actor, activity=False)
     _event(s, r.opportunity, actor, "reminder", r.note or None, {"deleted": [iso(r.due_at), None]})
     s.delete(r)
+
+
+# ---------------------------------------------------------------- first-contact message templates
+
+def template_ref(t: MessageTemplate | None) -> dict | None:
+    return {"id": t.id, "category": t.category, "name": t.name} if t else None
+
+
+def template_dict(t: MessageTemplate, usage: dict | None = None) -> dict:
+    return {"id": t.id, "category": t.category, "name": t.name, "subject": t.subject, "body": t.body,
+            "is_current": t.is_current, "archived": t.archived_at is not None,
+            "created_at": iso(t.created_at), "updated_at": iso(t.updated_at),
+            **({"usage": usage} if usage is not None else {})}
+
+
+def _template(s: Session, template_id: int) -> MessageTemplate:
+    t = s.get(MessageTemplate, template_id)
+    if not t:
+        raise ServiceError(f"Message template {template_id} not found.", 404)
+    return t
+
+
+def _template_fields(data: dict, category: str) -> dict:
+    unknown = set(data) - {"name", "subject", "body", "is_current", "category"}
+    if unknown:
+        raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    out = {k: _clean(k, data[k]) for k in ("name", "subject", "body") if k in data}
+    for k in ("name", "body"):
+        if k in out and not out[k]:
+            raise ServiceError(f"{k} can't be empty.")
+    if category not in domain.EMAIL_CATEGORIES:
+        out.pop("subject", None)  # LinkedIn messages have no subject line
+    if "is_current" in data:
+        out["is_current"] = bool(data["is_current"])
+    return out
+
+
+def _make_current(s: Session, t: MessageTemplate) -> None:
+    for other in s.scalars(select(MessageTemplate).where(MessageTemplate.category == t.category,
+                                                         MessageTemplate.id != t.id, MessageTemplate.is_current)):
+        other.is_current = False
+    t.is_current = True
+
+
+def templates(s: Session, *, include_archived: bool = False) -> list[dict]:
+    """Every variant with how its first messages did (all time, outbound deals only)."""
+    stmt = select(MessageTemplate).order_by(MessageTemplate.category, MessageTemplate.id)
+    if not include_archived:
+        stmt = stmt.where(MessageTemplate.archived_at.is_(None))
+    used = s.scalars(select(Opportunity).where(Opportunity.template_id.is_not(None),
+                                               Opportunity.archived_at.is_(None))).unique().all()
+    out = []
+    for t in s.scalars(stmt):
+        mine = [o for o in used if o.template_id == t.id and not o.inbound]
+        replied = sum(1 for o in mine if o.replied_at)
+        out.append(template_dict(t, {"sent": len(mine), "replied": replied, "calls": sum(1 for o in mine if o.call_at),
+                                     "won": sum(1 for o in mine if o.stage == "won"),
+                                     "reply_rate": round(replied / len(mine), 3) if mine else None}))
+    return out
+
+
+def current_template(s: Session, category: str) -> MessageTemplate:
+    if category not in {k for k, _ in domain.TEMPLATE_CATEGORIES}:
+        raise ServiceError(f"category must be one of: {', '.join(k for k, _ in domain.TEMPLATE_CATEGORIES)}.")
+    t = s.scalar(select(MessageTemplate).where(MessageTemplate.category == category, MessageTemplate.is_current,
+                                               MessageTemplate.archived_at.is_(None)))
+    if not t:
+        raise ServiceError(f"There is no current {domain.label(domain.TEMPLATE_CATEGORIES, category)} — the owner "
+                           "hasn't picked one. Don't send anything; tell them with notify_owner.", 404)
+    return t
+
+
+def create_template(s: Session, data: dict) -> MessageTemplate:
+    category = data.get("category")
+    if category not in {k for k, _ in domain.TEMPLATE_CATEGORIES}:
+        raise ServiceError(f"category must be one of: {', '.join(k for k, _ in domain.TEMPLATE_CATEGORIES)}.")
+    fields = _template_fields(data, category)
+    if not fields.get("name") or not fields.get("body"):
+        raise ServiceError("A message needs a name and a body.")
+    now = utcnow()
+    t = MessageTemplate(category=category, created_at=now, updated_at=now, **{**fields, "is_current": False})
+    s.add(t)
+    s.flush()
+    # The first variant in a category is the one in use until another is picked.
+    has_current = s.scalar(select(MessageTemplate.id).where(MessageTemplate.category == category, MessageTemplate.is_current,
+                                                            MessageTemplate.archived_at.is_(None)))
+    if fields.get("is_current") or not has_current:
+        _make_current(s, t)
+    return t
+
+
+def update_template(s: Session, template_id: int, data: dict) -> MessageTemplate:
+    t = _template(s, template_id)
+    if t.archived_at:
+        raise ServiceError("That message is deleted; create a new one instead.")
+    if "category" in data and data["category"] != t.category:
+        raise ServiceError("A message's category can't change; create a new one in the other category.")
+    fields = _template_fields(data, t.category)
+    current = fields.pop("is_current", None)
+    for k, v in fields.items():
+        setattr(t, k, v)
+    if current:
+        _make_current(s, t)
+    elif current is False:
+        t.is_current = False
+    t.updated_at = utcnow()
+    return t
+
+
+def delete_template(s: Session, template_id: int) -> None:
+    """A variant no live deal points to is removed; one that was sent is archived, so its stats survive."""
+    t = _template(s, template_id)
+    if s.scalar(select(func.count()).where(Opportunity.template_id == t.id, Opportunity.archived_at.is_(None))):
+        t.archived_at, t.is_current = utcnow(), False
+    else:
+        s.delete(t)
 
 
 # ---------------------------------------------------------------- notifications
@@ -709,6 +856,17 @@ def stats(s: Session, days: int | None = 90) -> dict:
             "won": sum(1 for o in all_opps if o.stage == "won" and within(o.closed_at)),
         })
 
+    def by_value(key_fn, label_fn) -> list[dict]:
+        keys = sorted({k for o in cohort if (k := key_fn(o)) is not None}, key=str)
+        rows = [{"key": str(k), "label": label_fn(k), **funnel([o for o in cohort if key_fn(o) == k])} for k in keys]
+        return sorted(rows, key=lambda r: -r["applied"])
+
+    variants = {t.id: t for t in s.scalars(select(MessageTemplate))}
+
+    def variant_label(tid: int) -> str:
+        t = variants.get(tid)
+        return f"{domain.label(domain.TEMPLATE_CATEGORIES, t.category)} · {t.name}" if t else f"#{tid}"
+
     open_opps = [o for o in all_opps if o.stage in domain.OPEN_STAGES]
     return {
         "days": days,
@@ -716,6 +874,8 @@ def stats(s: Session, days: int | None = 90) -> dict:
         "by_channel": grouped("channel", domain.CHANNELS),
         "by_network": grouped("network", domain.NETWORKS),
         "by_kind": grouped("kind", domain.KINDS),
+        "by_template": by_value(lambda o: o.template_id, variant_label),
+        "by_resume_version": by_value(lambda o: o.resume_version, str),
         # Every deal that died in the window, including leads you passed on — not just the applied cohort.
         "lost_reasons": [{"key": k, "label": lbl, "count": n} for k, lbl in domain.LOST_REASONS
                          if (n := sum(1 for o in all_opps if o.stage == "lost" and o.lost_reason == k

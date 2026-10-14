@@ -105,3 +105,27 @@ extra systemd sandboxing (no outbound network, no devices).
 - **No duplicates while unread**: the same title for the same deal (or for no deal) returns the existing alert with
   `created=false`, so a scheduled agent can't flood the inbox. Once you read it, the same alert can be sent again.
 - An alert about a deal that later gets deleted stays, without the deal link.
+
+## Application documents and first-contact messages — 2026-10-14
+
+- **Job applications** carry `resume_url`, `cover_letter_url` (the tailored Google Drive copies the applicant agent
+  makes for each job) and `resume_version`, a short label for the base resume it was tailored from. Every copy has
+  its own URL, so the URL can't group anything. The label is what lets Insights compare resumes ("By resume version").
+  All three fields are on the deal, not on a timeline event, because there's one set per application. Shown in the
+  drawer for jobs only. Upwork projects don't use them (Upwork keeps the proposal).
+- **Messages** page: first-contact variants per category (LinkedIn message, cold email, warm email; emails have a
+  subject). One per category is **current**; the first variant added becomes current automatically. Agents fetch
+  it with MCP `get_message_template` and send it word for word, filling only `{placeholders}`. Replies are never
+  templated. Only people can write templates.
+- The deal remembers **which variant was sent** (`template_id`, set by `log_activity kind=my_message template_id=…`
+  or from the drawer). Insights shows "By first message", and each variant card shows sent / replied / calls / won.
+- **Editing** a variant changes it in place. Past deals then point at the edited text (owner's choice: minor tweaks
+  are edits, a different approach is a new variant). **Deleting** a variant that a live deal used archives it
+  instead, so its stats and the deals' "first message" names survive. A variant used only by deleted deals is
+  removed outright.
+- No current variant in a category → `get_message_template` returns an error telling the agent not to send and to
+  `notify_owner`.
+- Smoke test adds a non-current "Smoke Test variant" and deletes it at the end, so it never changes what real agents
+  send. It becomes current only if the LinkedIn category was empty.
+- Template edits are **not** timeline events. Events belong to a deal, templates are owner-only settings, and the
+  `updated_at` on each variant is enough.

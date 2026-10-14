@@ -88,6 +88,12 @@ class Opportunity(Base):
     fit: Mapped[int | None] = mapped_column(Integer)  # 1-5, how good a match it is
     description: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Job applications: the tailored copies the applicant agent stored (Google Drive links).
+    resume_url: Mapped[str | None] = mapped_column(String(1000))
+    resume_version: Mapped[str | None] = mapped_column(String(120))  # the base it was tailored from
+    cover_letter_url: Mapped[str | None] = mapped_column(String(1000))
+    # The first-contact message sent — Insights compares reply rates per variant.
+    template_id: Mapped[int | None] = mapped_column(ForeignKey("message_templates.id", ondelete="SET NULL"), index=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -103,8 +109,26 @@ class Opportunity(Base):
     reminders: Mapped[list["Reminder"]] = relationship(
         back_populates="opportunity", cascade="all, delete-orphan", order_by="Reminder.due_at"
     )
+    template: Mapped["MessageTemplate | None"] = relationship()
 
     __table_args__ = (Index("ix_opp_stage", "stage"), Index("ix_opp_activity", "last_activity_at"))
+
+
+class MessageTemplate(Base):
+    """A first-contact message variant (LinkedIn, cold or warm email). One per category is current —
+    that is the one agents send. A variant that deals point to is archived, not deleted, so its
+    reply-rate history survives."""
+
+    __tablename__ = "message_templates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[str] = mapped_column(String(20), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    subject: Mapped[str | None] = mapped_column(String(300))  # emails only
+    body: Mapped[str] = mapped_column(Text)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 class Reminder(Base):

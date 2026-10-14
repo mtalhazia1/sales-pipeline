@@ -6,7 +6,7 @@ the EC2 host; see `deploy/README.md` for the per-project isolation convention).
 
 ## Rules that matter
 - **One source of truth per concern.** Vocabulary (stages, channels, networks, kinds, lost reasons,
-  activity kinds) lives ONLY in `server/app/domain.py`; the UI reads it from `/api/meta`, MCP tool schemas
+  activity kinds, message template categories) lives ONLY in `server/app/domain.py`; the UI reads it from `/api/meta`, MCP tool schemas
   use its Literals. All business rules live ONLY in `server/app/service.py`; `api.py` (humans) and
   `mcp_server.py` (agents) are thin adapters — never put logic in them.
 - Every write goes through `service.*` with an `Actor`, which records an `Event` (timeline + audit log) and

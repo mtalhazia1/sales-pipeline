@@ -13,7 +13,7 @@ from pydantic import Field
 
 from app import config, service
 from app.db import session_scope
-from app.domain import ActivityKind, Channel, Kind, LostReason, Network, Stage, WaitingOn
+from app.domain import ActivityKind, Channel, Kind, LostReason, Network, Stage, TemplateCategory, WaitingOn
 from app.oauth import SCOPE, Provider
 from app.service import Actor, ServiceError
 
@@ -42,6 +42,14 @@ How to work:
 - Put the job post text in `description`, your reasoning in `notes`; for running commentary use
   log_activity kind=note. Set `fit` 1-5 when you judge how well a lead matches (5 = perfect fit for
   an AI / full-stack software shop). Pass "" to clear a text field.
+- Job applications: store the tailored resume and cover letter in the owner's Google Drive and pass
+  their links as resume_url / cover_letter_url (plus resume_version = the base resume you tailored
+  from), on add_opportunity or update_opportunity.
+- First contact on LinkedIn, by cold email or by warm email (someone who knows the owner or came
+  through a network/referral): call get_message_template for that category and send its body (and
+  subject) word for word — only fill in the {placeholders} like {first_name} and {company}. Then
+  log_activity kind=my_message with that template_id and the text you actually sent. Never use a
+  template for replies — the owner answers those personally. Upwork proposals don't use templates.
 - Dates: YYYY-MM-DD (means 09:00 in the owner's timezone) or ISO-8601 datetime; get_agenda returns
   today's date and the timezone.
 - When something needs the owner to act or decide (a client question only they can answer, an offer,
@@ -139,6 +147,9 @@ def add_opportunity(
     fit: Annotated[int | None, Field(ge=1, le=5, description="How good a match, 1-5")] = None,
     description: Annotated[str | None, Field(description="The job post / project brief")] = None,
     notes: str | None = None,
+    resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
+    resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
+    cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
     reminder_at: Annotated[str | None, Field(description="Optional first follow-up date")] = None,
     reminder_note: str | None = None,
 ) -> Result:
@@ -176,6 +187,10 @@ def update_opportunity(
     fit: Annotated[int | None, Field(ge=1, le=5)] = None,
     description: str | None = None,
     notes: Annotated[str | None, Field(description="Replaces the notes; read them first to append")] = None,
+    resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
+    resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
+    cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
+    template_id: Annotated[int | None, Field(description="The first-contact message template that was sent (normally set via log_activity)")] = None,
 ) -> Result:
     """Change fields of an opportunity. Only the fields you pass are changed."""
     fields = {k: v for k, v in locals().items() if v is not None and k != "opportunity_id"}
@@ -190,11 +205,24 @@ def log_activity(
     kind: Annotated[ActivityKind, Field(description="client_message | my_message | call | note")],
     summary: Annotated[str, Field(description="What was said or happened, in a sentence or two")],
     occurred_at: Annotated[str | None, Field(description="When it happened, if earlier (default now); never in the future")] = None,
+    template_id: Annotated[int | None, Field(description="kind=my_message only: id of the get_message_template message you sent")] = None,
 ) -> Result:
     """Record a message, call or note on the timeline; it moves the deal along by itself:
     client_message → stage replied (if earlier) and it's the owner's move; my_message → a lead becomes
-    applied and it's the client's move; call (booked or held) → stage call. note changes nothing."""
-    return _run(lambda s: service.summary(service.log_activity(s, _actor(), opportunity_id, kind, summary, occurred_at)))
+    applied and it's the client's move; call (booked or held) → stage call. note changes nothing.
+    For a first-contact message sent from a template, pass its template_id so its reply rate is tracked."""
+    return _run(lambda s: service.summary(service.log_activity(s, _actor(), opportunity_id, kind, summary, occurred_at,
+                                                               template_id)))
+
+
+@mcp.tool(annotations=READ)
+def get_message_template(
+    category: Annotated[TemplateCategory, Field(description="linkedin | cold_email | warm_email (warm = they know the owner or came via a network/referral)")],
+) -> Result:
+    """The owner's current first-contact message for a category: id, name, subject (emails), body.
+    Send it word for word, filling only the {placeholders}; then log_activity kind=my_message with
+    template_id=id. First contact only — never for replies."""
+    return _run(lambda s: service.template_dict(service.current_template(s, category)))
 
 
 @mcp.tool(annotations=WRITE)

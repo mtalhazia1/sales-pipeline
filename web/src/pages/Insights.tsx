@@ -55,6 +55,16 @@ export function Insights() {
             <Card title="Open pipeline" sub="right now">
               <OpenPipeline rows={s.open_by_stage} />
             </Card>
+            {s.by_template.length > 0 && (
+              <Card title="By first message" sub="which outreach variant gets replies">
+                <FunnelTable rows={s.by_template} />
+              </Card>
+            )}
+            {s.by_resume_version.length > 0 && (
+              <Card title="By resume version" sub="job applications, by the base resume tailored from">
+                <FunnelTable rows={s.by_resume_version} />
+              </Card>
+            )}
             <Card title="Jobs vs projects">
               <FunnelTable rows={s.by_kind} />
               {s.lost_reasons.length > 0 && (

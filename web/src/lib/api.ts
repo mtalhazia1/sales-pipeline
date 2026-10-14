@@ -10,6 +10,7 @@ export type Meta = {
   open_stages: string[];
   lost_reasons: Option[];
   activity_kinds: Option[];
+  template_categories: Option[];
   channel_by_host: Record<string, string>;
   timezone: string;
   timezone_set: boolean;
@@ -70,6 +71,10 @@ export type Detail = Summary & {
   contact_url: string | null;
   description: string | null;
   notes: string | null;
+  resume_url: string | null;
+  resume_version: string | null;
+  cover_letter_url: string | null;
+  template: TemplateRef | null;
   updated_at: string;
   applied_at: string | null;
   replied_at: string | null;
@@ -78,6 +83,19 @@ export type Detail = Summary & {
   closed_at: string | null;
   reminders: Reminder[];
   events: TimelineEvent[];
+};
+
+export type TemplateRef = { id: number; category: string; name: string };
+
+/** A first-contact message variant; agents send the category's current one. */
+export type MessageTemplate = TemplateRef & {
+  subject: string | null;
+  body: string;
+  is_current: boolean;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  usage: { sent: number; replied: number; calls: number; won: number; reply_rate: number | null };
 };
 
 export type AgendaReminder = Reminder & { overdue: boolean; opportunity: Summary };
@@ -126,6 +144,8 @@ export type Stats = {
   by_channel: (Funnel & { key: string; label: string })[];
   by_network: (Funnel & { key: string; label: string })[];
   by_kind: (Funnel & { key: string; label: string })[];
+  by_template: (Funnel & { key: string; label: string })[];
+  by_resume_version: (Funnel & { key: string; label: string })[];
   lost_reasons: { key: string; label: string; count: number }[];
   open_by_stage: { stage: string; label: string; count: number; value: number }[];
   weekly: { week: string; applied: number; replies: number; won: number }[];
