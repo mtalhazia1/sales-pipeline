@@ -25,7 +25,7 @@ export function Today() {
       toast.ok(said, {
         label: "Undo",
         run: () => {
-          act.update.mutate({ id: o.id, stage: o.stage });
+          act.update.mutate({ id: o.id, stage: o.stage, waiting_on: o.waiting_on });
           if (r) act.deleteReminder.mutate({ id: o.id, reminderId: r.id });
         },
       });

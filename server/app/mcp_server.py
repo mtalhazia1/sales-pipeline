@@ -201,7 +201,7 @@ def add_opportunity(
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_opportunity(
     opportunity_id: int,
-    stage: Annotated[Stage | None, Field(description="For moves no message implies (proposal, won, lost) or to correct one; log_activity moves the rest. lost also completes the deal's open reminders")] = None,
+    stage: Annotated[Stage | None, Field(description="For moves no message implies (proposal, won, lost) or to correct one; log_activity moves the rest. Resets whose move to the stage's default unless you pass waiting_on; lost also completes the deal's open reminders")] = None,
     lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'. no_response = they went silent: a later client_message reopens only that kind")] = None,
     waiting_on: WaitingOn | None = None,
     company: str | None = None,

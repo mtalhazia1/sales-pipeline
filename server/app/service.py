@@ -179,6 +179,8 @@ def _clean(field: str, value: Any) -> Any:
     if value is None:
         if field in ("company", "kind", "channel", "network", "stage"):
             raise ServiceError(f"{field} can't be empty.")
+        if field == "inbound":
+            raise ServiceError("inbound is true or false.")
         return None
     if field in ENUMS and value not in {k for k, _ in ENUMS[field]}:
         allowed = ", ".join(k for k, _ in ENUMS[field])
@@ -469,7 +471,7 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
         if opp.stage in domain.OPEN_STAGES:
             _rewind_milestones(opp, opp.stage)
         _stamp_milestones(opp, opp.stage, now)
-        if "waiting_on" not in changes:
+        if "waiting_on" not in data:  # passed explicitly (even unchanged): keep it
             opp.waiting_on = _default_waiting(opp.stage)  # e.g. back to lead or on to call: nobody's move
         if lost_at and opp.stage in domain.OPEN_STAGES:
             # Reopening a lost deal (e.g. Undo on "Pass") brings back the reminders losing it closed.
@@ -530,10 +532,6 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     # Later templates (a follow-up, a rate card) are counted as uses but never re-credit the deal's reply.
     if template_id is not None and opp.template_id is None and (opp.replied_at is None or when < opp.replied_at):
         opp.template_id = template_id
-    # Whose move follows the latest contact: back-filled history (an older message or call) doesn't flip it.
-    prior = s.scalar(select(func.max(Event.occurred_at)).where(
-        Event.opportunity_id == opp.id, Event.kind.in_(("client_message", "my_message", "call"))))
-    latest = prior is None or when >= prior
     if kind == "client_message":
         if opp.stage == "lead":
             opp.inbound = opp.inbound or opp.applied_at is None
@@ -542,17 +540,17 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
         revive = opp.stage == "lost" and opp.lost_reason == "no_response"
         if revive or (opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["replied"]):
             opp.stage = "replied"
-        if opp.stage in domain.OPEN_STAGES and latest:
+        if opp.stage in domain.OPEN_STAGES:
             opp.waiting_on = "me"
     elif kind == "my_message":
         if opp.stage == "lead":
             opp.stage = "applied"
-        if opp.stage in domain.OPEN_STAGES and latest:
+        if opp.stage in domain.OPEN_STAGES:
             opp.waiting_on = "client"
     elif kind == "call":
         if opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["call"]:
             opp.stage = "call"
-        if opp.stage in domain.OPEN_STAGES and latest:
+        if opp.stage in domain.OPEN_STAGES:
             opp.waiting_on = None  # a call is booked or held: nobody owes a message until someone writes
     if opp.stage != before["stage"]:
         _stamp_milestones(opp, opp.stage, when)

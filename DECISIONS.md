@@ -402,3 +402,12 @@ every owner page at desktop and phone width).
   not a client reply (it would inflate reply rates); smaller wording fixes from the tightened guide.
 - Left as is: reopening a long-lost deal brings its old reminders back overdue (it's an undo); `waiting_on` and a
   deal's first-message template can be set but not cleared over MCP.
+
+### Third pass — 2026-10-19
+- **Reverted "whose move follows the latest contact"** (second pass): comparing timestamps made a date-only reply
+  (09:00) lose to an earlier timed entry the same day, so a real client reply never reached Your move, and it left
+  revived or back-filled deals in nobody's list. Back to the simple rule: each logged message or call sets whose
+  move. Known gap, accepted: back-filling an old call on a deal the client has since written on clears Your move.
+- An explicitly passed `waiting_on` now wins even when it equals the current value (a stage change otherwise resets
+  it to the stage's default); Today's Undo passes it back, so undoing "Pass" restores whose move it was.
+- `inbound: null` gets a clean error (was a 500).

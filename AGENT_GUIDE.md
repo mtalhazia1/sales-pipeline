@@ -47,8 +47,8 @@ Any other section is a **list** you define (`targets`, `contacts`, `drafts`), on
 here; deal reminders (`set_reminder`) are the owner's Today list. Re-read the deal before acting on a queued row:
 the owner or another agent may have handled it.
 
-**Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions, and the owner's latest
-word: where one differs from your prompt, follow the row (or raise a `proposal`). Fixed ones are
+**Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions: where one differs from
+your prompt, follow the row, or raise a `proposal` if unsure which the owner means. Fixed ones are
 read-only. In lists you may add or update fields and change `due`, never remove fields or the row: when done,
 clear `due` and merge the outcome (`{"done": true, "result": "…"}`); a non-object value takes no merge, so record
 the outcome in your own row. The owner deletes the locked row once they've seen it. One that looks wrong: say so with `notify_owner` or a
