@@ -527,8 +527,13 @@ function Reminders({ opp }: { opp: Detail }) {
             >
               <span className="block h-4.5 w-4.5 rounded-full border-2 border-line group-hover/done:border-emerald-500 group-hover/done:bg-emerald-500/15" />
             </button>
-            <Bell size={14} className={DUE_TONE[d.tone]} />
+            {r.for_agent ? <Bot size={14} className={DUE_TONE[d.tone]} /> : <Bell size={14} className={DUE_TONE[d.tone]} />}
             <span className="flex-1 truncate text-[13px]">{r.note || "Reminder"}</span>
+            {r.for_agent && (
+              <span className="text-xs text-muted" title="An agent's own follow-up: it shows on Today only if it's over a day late">
+                {r.created_by}
+              </span>
+            )}
             <span className={cx("text-xs", DUE_TONE[d.tone])}>{d.text}</span>
             <button
               onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, due_at: snoozed(r.due_at) })}

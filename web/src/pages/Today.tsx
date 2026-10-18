@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Bell, BellRing, Check, Clock, PartyPopper, Send, Sparkles, X } from "lucide-react";
+import { Bell, BellRing, Bot, Check, Clock, PartyPopper, Send, Sparkles, X } from "lucide-react";
 import { useNavigate } from "react-router";
 import type { AgendaReminder, Summary } from "../lib/api";
 import { due, inDays, snoozed } from "../lib/format";
@@ -191,7 +191,8 @@ function ReminderRow({ r }: { r: AgendaReminder }) {
       showNext={false}
       meta={
         <span className={cx("inline-flex items-center gap-1 font-medium", DUE_TONE[d.tone])}>
-          <Bell size={12} /> {r.note || "Reminder"} · {d.text}
+          {r.for_agent ? <Bot size={12} /> : <Bell size={12} />} {r.note || "Reminder"} · {d.text}
+          {r.for_agent && <span className="font-normal text-muted">· {r.created_by} missed this</span>}
         </span>
       }
       right={

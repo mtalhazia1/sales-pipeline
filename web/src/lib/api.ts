@@ -19,7 +19,7 @@ export type Meta = {
   base_url: string;
 };
 
-export type ReminderRef = { id: number; due_at: string; note: string };
+export type ReminderRef = { id: number; due_at: string; note: string; for_agent: boolean };
 
 export type Summary = {
   id: number;
@@ -54,6 +54,8 @@ export type Reminder = {
   due_at: string;
   note: string;
   done_at: string | null;
+  /** An agent's own follow-up: on Today only once it's over a day late. */
+  for_agent: boolean;
   created_by: string;
 };
 
@@ -144,6 +146,7 @@ export type Agenda = {
   new_leads: Summary[];
   new_leads_total: number;
   upcoming: AgendaReminder[];
+  agent_due: AgendaReminder[];
   needs_review: number;
   unread_notifications: number;
   messages_need_review: number;

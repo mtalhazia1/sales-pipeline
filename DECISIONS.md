@@ -335,3 +335,17 @@ fresh agent working only from that text on a scratch server.
   reminder_at is refused, since that one is usually a reflex.
 - Also taking the write lock: log_activity, notify_owner and update_template (two agents at once could double an
   alert or log changes against a stale stage). Guide: give back only a spend you saw succeed, with its own idem.
+
+## Agents' own follow-ups — 2026-10-19
+
+Gap: an agent's own follow-up on a deal had no good home. As a reminder it filled the owner's Today list; kept
+only in agent state, Today showed the deal as "gone quiet".
+- **Reminders can be tagged `for_agent`** (set_reminder / update_reminder, REST too). One counts as the deal's
+  next step, so the deal never looks quiet. It's left out of the owner's Today and upcoming lists until it's
+  more than 24 hours late (`AGENT_REMINDER_MISSED_HOURS`): then it shows under Due as "<agent> missed this".
+- Agents pick up their due follow-ups from get_agenda's `agent_due` and mark them done; `for_agent: false`
+  hands one to the owner. Non-deal to-dos stay in state list rows with `due`.
+- One migration (`5d2e8a41c9f7`) adds the column; existing reminders stay the owner's.
+- Also locked: update (an agent logging on a deal while another updates it left stage and whose-move out of step)
+  and update_reminder. Guide: give a spend back only in the same counter window (a give-back after UTC midnight
+  lands in the new day and would let its cap be passed).

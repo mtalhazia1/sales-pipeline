@@ -41,9 +41,10 @@ Deals:
   conversation. Use update_opportunity for facts and for moves no message implies (proposal sent, won,
   lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no.
 - Keep one next step on every deal in progress (past lead); a deal without one gets forgotten.
-  set_reminder adds one, update_reminder moves or rewords it (its id is next_reminder.id in the deal's
-  summary). Reminders are the owner's Today list, for steps they should see or take: a scheduled
-  agent's own to-dos belong in a state list row with `due`.
+  set_reminder adds one, update_reminder moves, rewords or finishes it (its id is next_reminder.id in
+  the deal's summary). A step the owner takes shows on their Today list. A follow-up you'll do yourself
+  is set_reminder(for_agent=true): it counts as the deal's next step, comes back to you in get_agenda's
+  agent_due, and reaches the owner only if it's over a day late. Mark it done when you've done it.
 - The job post goes in `description`, your assessment in `notes`, running commentary in a note
   activity. `fit` 1-5 is your judgment of the match (5 = ideal for an AI / full-stack software shop).
 - Job applications: the tailored resume and cover letter live in the owner's Google Drive; store their
@@ -310,10 +311,12 @@ def set_reminder(
     opportunity_id: int,
     due: Annotated[str, Field(description="YYYY-MM-DD (09:00 owner's time) or ISO datetime")],
     note: Annotated[str, Field(description="The next step, e.g. 'Follow up if no reply' (max 500 characters)")] = "",
+    for_agent: Annotated[bool, Field(description="true = a follow-up you'll do yourself: it reaches the owner's Today only if it's over a day late")] = False,
 ) -> Result:
-    """Add a next step to an opportunity; returns the reminder (with its id). It shows up on the owner's
-    Today list when due. Each call adds one: to move or reword the existing next step, use update_reminder."""
-    return _run(lambda s: service.reminder_dict(service.add_reminder(s, _actor(), opportunity_id, due, note)))
+    """Add a next step to an opportunity; returns the reminder (with its id). The owner's own steps show on
+    their Today list when due; for_agent ones come back to you in get_agenda's agent_due. Each call adds
+    one: to move, reword or finish the existing next step, use update_reminder."""
+    return _run(lambda s: service.reminder_dict(service.add_reminder(s, _actor(), opportunity_id, due, note, for_agent)))
 
 
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
@@ -322,12 +325,14 @@ def update_reminder(
     done: Annotated[bool | None, Field(description="true = done; false = reopen")] = None,
     due: Annotated[str | None, Field(description="Reschedule: YYYY-MM-DD or ISO datetime")] = None,
     note: Annotated[str | None, Field(description="New wording (max 500 characters)")] = None,
+    for_agent: Annotated[bool | None, Field(description="false = hand your follow-up to the owner; true = take it on yourself")] = None,
 ) -> Result:
-    """Complete, reschedule or reword a reminder; returns it. Ids are in get_opportunity, get_agenda and
-    each deal summary's next_reminder."""
-    if done is None and due is None and note is None:
-        raise ToolError("Pass done, due or note.")
-    return _run(lambda s: service.reminder_dict(service.update_reminder(s, _actor(), reminder_id, done=done, due=due, note=note)))
+    """Complete, reschedule, reword or hand over a reminder; returns it. Ids are in get_opportunity,
+    get_agenda and each deal summary's next_reminder."""
+    if done is None and due is None and note is None and for_agent is None:
+        raise ToolError("Pass done, due, note or for_agent.")
+    return _run(lambda s: service.reminder_dict(service.update_reminder(s, _actor(), reminder_id, done=done, due=due, note=note,
+                                                                        for_agent=for_agent)))
 
 
 @mcp.tool(annotations=WRITE)
@@ -348,9 +353,10 @@ def notify_owner(
 
 @mcp.tool(annotations=READ)
 def get_agenda() -> Result:
-    """Today's priorities: due/overdue reminders, deals where the owner owes a reply, open deals that
-    went quiet without a next step, best new leads, the coming week's reminders, how many alerts (from
-    any agent) the owner hasn't read, and today's date and the timezone."""
+    """Today's priorities: the owner's due reminders (plus agent follow-ups over a day late), deals where
+    the owner owes a reply, open deals that went quiet without a next step, best new leads, the coming
+    week's reminders, agent_due (agent follow-ups due now: pick up yours), unread alerts, today's date
+    and the timezone."""
     return _run(service.agenda)
 
 

@@ -101,6 +101,8 @@ MILESTONE_CHAIN = ["applied", "replied", "call", "proposal"]
 # Days without activity before an open deal with no scheduled reminder is flagged "gone quiet".
 # (Leads are never "quiet" — nothing has been sent yet; they wait in New leads.)
 QUIET_AFTER_DAYS = {"matcher": 7, "applied": 5, "replied": 2, "call": 2, "proposal": 3}
+# An agent's own follow-up shows on the owner's Today only once it is this late (the agent missed it).
+AGENT_REMINDER_MISSED_HOURS = 24
 
 # Hostnames → channel, so a pasted URL fills the channel by itself.
 CHANNEL_BY_HOST = {

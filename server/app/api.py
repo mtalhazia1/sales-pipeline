@@ -208,23 +208,25 @@ def log_activity(opp_id: int, body: ActivityIn, c: Ctx = Depends(ctx), s: Sessio
 class ReminderIn(BaseModel):
     due_at: str
     note: str = ""
+    for_agent: bool = False
 
 
 @router.post("/opportunities/{opp_id}/reminders")
 def add_reminder(opp_id: int, body: ReminderIn, c: Ctx = Depends(ctx), s: Session = DB):
-    return service.reminder_dict(service.add_reminder(s, c.actor, opp_id, body.due_at, body.note))
+    return service.reminder_dict(service.add_reminder(s, c.actor, opp_id, body.due_at, body.note, body.for_agent))
 
 
 class ReminderPatch(BaseModel):
     done: bool | None = None
     due_at: str | None = None
     note: str | None = None
+    for_agent: bool | None = None
 
 
 @router.patch("/reminders/{reminder_id}")
 def update_reminder(reminder_id: int, body: ReminderPatch, c: Ctx = Depends(ctx), s: Session = DB):
     return service.reminder_dict(service.update_reminder(s, c.actor, reminder_id, done=body.done,
-                                                         due=body.due_at, note=body.note))
+                                                         due=body.due_at, note=body.note, for_agent=body.for_agent))
 
 
 @router.delete("/reminders/{reminder_id}")
