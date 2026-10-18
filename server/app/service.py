@@ -493,6 +493,7 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
         raise ServiceError(f"kind must be one of: {', '.join(k for k, _ in domain.ACTIVITY_KINDS)}.")
     if (template_id is not None or channel) and kind != "my_message":
         raise ServiceError("template_id and channel only go with kind='my_message' (a message you sent).")
+    _write_lock(s)  # two agents logging on one deal: the second reads the first's stage, not a stale one
     opp = _get(s, opp_id)
     if template_id is not None:
         template_id = _clean("template_id", template_id)
@@ -898,6 +899,7 @@ def create_template(s: Session, actor: Actor, data: dict) -> MessageTemplate:
 
 
 def update_template(s: Session, actor: Actor, template_id: int, data: dict) -> MessageTemplate:
+    _write_lock(s)  # the version check and the save see the same row
     t = _template(s, template_id)
     if t.archived_at:
         raise ServiceError("That message is deleted; create a new one instead.")
@@ -948,6 +950,7 @@ def notify(s: Session, actor: Actor, title: str, message: str | None = None, opp
     if len(title) > 200:
         raise ServiceError("title is too long (max 200 characters) — put the details in message.")
     message, url = _clean("message", message), _clean("url", url)
+    _write_lock(s)  # the same alert sent twice at once is still stored once
     opp = _get(s, opportunity_id) if opportunity_id is not None else None
     existing = s.scalar(select(Notification).where(
         Notification.read_at.is_(None), Notification.title == title,
@@ -1053,8 +1056,8 @@ def _moment(s: Session, field: str, value: Any, past: bool = False) -> datetime 
 
 def _write_lock(s: Session) -> None:
     """Take SQLite's write lock now (a no-op UPDATE). MCP tools run in threads, so a read-then-write
-    (a counter, a `max` cursor, a lease) must hold the lock before it reads: then no other request can
-    commit in between, and the reads that follow see the latest data."""
+    (a counter, a `max` cursor, a lease, a duplicate check) must hold the lock before it reads: then no
+    other request can commit in between, and the reads that follow see the latest data."""
     s.execute(text("UPDATE agent_runs SET id = id WHERE 0"))
 
 
@@ -1164,7 +1167,8 @@ def _apply_change(s: Session, actor: Actor, default_ns: str, ch: Any, now: datet
             raise ServiceError("owner_row: its value isn't a JSON object, so nothing can be merged into it; change "
                                "only its due, and record the outcome in a row of your own.")
         if not isinstance(value, dict) or (live and not isinstance(live.value, dict)):
-            raise ServiceError("merge needs a JSON object, and the stored value must be one; use op=set.")
+            raise ServiceError("merge needs a JSON object, and the stored value must be one" + (
+                "." if live and live.locked and actor.is_agent else "; use op=set."))
         value = {k: v for k, v in {**(live.value if live else {}), **value}.items() if v is not None}  # null drops a field
     elif op == "max" and live:
         value = _larger(live.value, value)

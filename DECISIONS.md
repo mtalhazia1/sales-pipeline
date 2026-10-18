@@ -333,3 +333,5 @@ fresh agent working only from that text on a scratch server.
   outcome in your own row).
 - Left as is: set_reminder works on a lost deal (a deliberate "check back in Q1"); only an add-as-lost with
   reminder_at is refused, since that one is usually a reflex.
+- Also taking the write lock: log_activity, notify_owner and update_template (two agents at once could double an
+  alert or log changes against a stale stage). Guide: give back only a spend you saw succeed, with its own idem.

@@ -13,8 +13,10 @@ the EC2 host; see `deploy/README.md` for the per-project isolation convention).
 - Every write goes through `service.*` with an `Actor`, which records an `Event` (timeline + audit log) and
   sets `needs_review` (agent → true, human → false). Don't bypass it. Exception: agent state (`agent_*` tables,
   scheduled agents' run memory) records no Event and no review flag — ~700 runs a day would bury Review.
-- Agent-state read-modify-writes call `_write_lock(s)` first: MCP sync tools run in threads, and SQLite only
-  serializes them if the write lock is taken before the read.
+- Read-modify-writes that agents can race (agent state, create, log_activity, notify, template/category saves)
+  call `_write_lock(s)` first: MCP sync tools run in threads, and SQLite only serializes them if the write lock
+  is taken before the read. (pysqlite opens a transaction only at the first write, so a SAVEPOINT before any
+  write would commit on its own.)
 - Times are stored naive UTC; date-only input means 09:00 in the workspace timezone (`settings.timezone`).
   Convert a stored datetime to epoch with `.replace(tzinfo=UTC)` — a bare `.timestamp()` reads it as local time.
 - MCP SDK is `mcp==2.3.0` (`MCPServer`, not FastMCP). Raise `ToolError` for messages the agent should see —

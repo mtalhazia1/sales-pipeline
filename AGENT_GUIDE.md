@@ -121,8 +121,10 @@ ns and worker: run count, statuses, summed counts, and the latest 20 summaries o
   with different items (including a changed `limit`) is a new spend. A call that only reads is never replayed.
 - A stop beats a replay. If a stop refuses your retry, keep the action (and its idem) in a list row with `due`
   and retry the same call once the stop clears: within 24h the replay confirms it counted once; after that it
-  spends again. Give it back (`by: -1`) only if you're dropping the action for good, and never reuse that
-  idem: the stored success would still replay and let you act without spending.
+  spends again. Give it back (`by: -1`) only when you're dropping the action for good and you saw that spend
+  succeed (if you never got its reply, retry it once the stop clears, then give it back). Give the give-back its
+  own idem (e.g. `upwork-finder:job-42:back`) so a retried give-back returns one unit, and never reuse the
+  spend's idem: its stored success would still replay and let you act without spending.
 → `ok`, and `counters` with each `value` and `allowed`. All or nothing: when `ok` is false nothing was counted;
 `refused` names the cap, or `stopped` quotes the stop rows: a call that spends is refused while any of its
 namespaces has a stop. A call that only reads or gives back still works then: its reply carries `stopped` too,
