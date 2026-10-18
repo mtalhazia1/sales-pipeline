@@ -13,7 +13,7 @@ the EC2 host; see `deploy/README.md` for the per-project isolation convention).
 - Every write goes through `service.*` with an `Actor`, which records an `Event` (timeline + audit log) and
   sets `needs_review` (agent → true, human → false). Don't bypass it. Exception: agent state (`agent_*` tables,
   scheduled agents' run memory) records no Event and no review flag — ~700 runs a day would bury Review.
-- Read-modify-writes that agents can race (agent state, create, update, log_activity, reminders, notify,
+- Read-modify-writes that agents can race (agent state, create, update, log_activity, update_reminder, notify,
   category saves, template edits)
   call `_write_lock(s)` first: MCP sync tools run in threads, and SQLite only serializes them if the write lock
   is taken before the read. (pysqlite opens a transaction only at the first write, so a SAVEPOINT before any

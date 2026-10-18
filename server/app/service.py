@@ -256,15 +256,13 @@ def _loggable(changes: dict, s: Session) -> dict:
     return changes
 
 
-def _touch(opp: Opportunity, actor: Actor, activity: bool = True, review: bool = True) -> None:
+def _touch(opp: Opportunity, actor: Actor, activity: bool = True) -> None:
     now = utcnow()
     opp.updated_at = now
     if activity:
         opp.last_activity_at = now
-    # An agent's write needs a human look; a human acting on the deal has looked at it. (`review=False`: an
-    # agent's bookkeeping on its own follow-up, which would only bury Review.)
-    if review or not actor.is_agent:
-        opp.needs_review = actor.is_agent
+    # An agent's write needs a human look; a human acting on the deal has looked at it.
+    opp.needs_review = actor.is_agent
 
 
 def _get(s: Session, opp_id: int) -> Opportunity:
@@ -278,8 +276,7 @@ def _get(s: Session, opp_id: int) -> Opportunity:
 
 def summary(opp: Opportunity) -> dict:
     open_rem = [r for r in opp.reminders if not r.done_at]
-    # The owner's next step when there is one; otherwise an agent's own follow-up.
-    nxt = min(open_rem, key=lambda r: (r.agent is not None, r.due_at)) if open_rem else None
+    nxt = min(open_rem, key=lambda r: r.due_at) if open_rem else None
     return {
         "id": opp.id,
         "deleted": opp.archived_at is not None,
@@ -305,8 +302,7 @@ def summary(opp: Opportunity) -> dict:
         "created_by": opp.created_by,
         "created_at": iso(opp.created_at),
         "last_activity_at": iso(opp.last_activity_at),
-        "next_reminder": {"id": nxt.id, "due_at": iso(nxt.due_at), "note": nxt.note, "for_agent": nxt.agent is not None,
-                          "agent": nxt.agent} if nxt else None,
+        "next_reminder": {"id": nxt.id, "due_at": iso(nxt.due_at), "note": nxt.note} if nxt else None,
     }
 
 
@@ -340,7 +336,7 @@ def detail(s: Session, opp: Opportunity, events_limit: int = 100) -> dict:
 
 def reminder_dict(r: Reminder) -> dict:
     return {"id": r.id, "opportunity_id": r.opportunity_id, "due_at": iso(r.due_at), "note": r.note,
-            "done_at": iso(r.done_at), "for_agent": r.agent is not None, "agent": r.agent, "created_by": r.created_by}
+            "done_at": iso(r.done_at), "created_by": r.created_by}
 
 
 def event_dict(e: Event, opp: Opportunity | None = None) -> dict:
@@ -590,36 +586,21 @@ def search(s: Session, *, q: str | None = None, stage: list[str] | None = None, 
 
 # ---------------------------------------------------------------- reminders
 
-def add_reminder(s: Session, actor: Actor, opp_id: int, due: str | datetime, note: str = "",
-                 for_agent: bool = False) -> Reminder:
-    """A next step. `for_agent`: a follow-up the calling agent will do itself — it keeps the deal from looking
-    quiet, but reaches the owner's Today only once it's missed (see agenda)."""
-    _write_lock(s)
+def add_reminder(s: Session, actor: Actor, opp_id: int, due: str | datetime, note: str = "") -> Reminder:
     opp = _get(s, opp_id)
     due_at = parse_when(due, get_timezone(s))
     if due_at is None:
         raise ServiceError("A reminder needs a date.")
-    agent = _follow_up_agent(actor, for_agent)
-    r = Reminder(opportunity=opp, due_at=due_at, note=(note or "").strip()[:500], agent=agent, created_by=actor.name)
+    r = Reminder(opportunity=opp, due_at=due_at, note=(note or "").strip()[:500], created_by=actor.name)
     s.add(r)
     s.flush()
-    _touch(opp, actor, activity=False, review=agent is None)
-    _event(s, opp, actor, "reminder", r.note or None,
-           {"due_at": [None, iso(due_at)], **({"agent": [None, agent]} if agent else {})})
+    _touch(opp, actor, activity=False)
+    _event(s, opp, actor, "reminder", r.note or None, {"due_at": [None, iso(due_at)]})
     return r
 
 
-def _follow_up_agent(actor: Actor, for_agent: Any) -> str | None:
-    """Whose follow-up a reminder is: the calling agent's (for_agent) or the owner's."""
-    if not isinstance(for_agent, bool):
-        raise ServiceError("for_agent is true or false.")
-    if for_agent and not actor.is_agent:
-        raise ServiceError("for_agent is for an agent's own follow-up; a reminder you set is yours.")
-    return actor.name if for_agent else None
-
-
 def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | None = None,
-                    due: str | None = None, note: str | None = None, for_agent: bool | None = None) -> Reminder:
+                    due: str | None = None, note: str | None = None) -> Reminder:
     _write_lock(s)
     r = s.get(Reminder, reminder_id)
     if not r or r.opportunity.archived_at:
@@ -634,13 +615,8 @@ def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | 
     if note is not None and note.strip()[:500] != r.note:
         changes["note"] = [r.note or None, note.strip()[:500] or None]
         r.note = note.strip()[:500]
-    own = r.agent is not None and r.agent == actor.name  # an agent working its own follow-up
-    if for_agent is not None and (agent := _follow_up_agent(actor, for_agent)) != r.agent:
-        changes["agent"] = [r.agent, agent]  # handed over: agent → owner (null), or taken on by an agent
-        r.agent = agent
     if changes:
-        # An agent's bookkeeping on its own follow-up stays out of Review; handing it over doesn't.
-        _touch(r.opportunity, actor, activity=False, review=not (own and "agent" not in changes))
+        _touch(r.opportunity, actor, activity=False)
         _event(s, r.opportunity, actor, "reminder", r.note or None, changes)
     return r
 
@@ -1610,9 +1586,8 @@ def purge_state(s: Session) -> None:
 
 # ---------------------------------------------------------------- agenda / insights
 
-def agenda(s: Session, actor: Actor | None = None) -> dict:
-    """What to do today, in priority order. Shared by the Today screen and the agents; an agent's
-    `agent_due` holds only its own follow-ups."""
+def agenda(s: Session) -> dict:
+    """What to do today, in priority order. Shared by the Today screen and the agents."""
     tz = get_timezone(s)
     now = utcnow()
     local_today = datetime.now(tz).date()
@@ -1620,26 +1595,14 @@ def agenda(s: Session, actor: Actor | None = None) -> dict:
     week_end = end_of_today + timedelta(days=7)
     active = Opportunity.archived_at.is_(None)
 
-    # The owner's own reminders, plus agents' follow-ups once they're missed: then they're the owner's to act
-    # on, and they leave the agent's list, so the client never gets the same follow-up twice.
-    missed_before = now - timedelta(hours=domain.AGENT_REMINDER_MISSED_HOURS)
     due = s.execute(
         select(Reminder, Opportunity).join(Opportunity)
-        .where(Reminder.done_at.is_(None), active,
-               or_(and_(Reminder.agent.is_(None), Reminder.due_at < end_of_today),
-                   and_(Reminder.agent.is_not(None), Reminder.due_at < missed_before)))
+        .where(Reminder.done_at.is_(None), Reminder.due_at < end_of_today, active)
         .order_by(Reminder.due_at)
     ).all()
     upcoming = s.execute(
         select(Reminder, Opportunity).join(Opportunity)
-        .where(Reminder.done_at.is_(None), Reminder.agent.is_(None), Reminder.due_at >= end_of_today,
-               Reminder.due_at < week_end, active)
-        .order_by(Reminder.due_at)
-    ).all()
-    mine = Reminder.agent == actor.name if actor and actor.is_agent else Reminder.agent.is_not(None)
-    agent_due = s.execute(  # an agent's work queue: its follow-ups due now and not yet missed
-        select(Reminder, Opportunity).join(Opportunity)
-        .where(Reminder.done_at.is_(None), mine, Reminder.due_at <= now, Reminder.due_at >= missed_before, active)
+        .where(Reminder.done_at.is_(None), Reminder.due_at >= end_of_today, Reminder.due_at < week_end, active)
         .order_by(Reminder.due_at)
     ).all()
     open_opps = s.scalars(select(Opportunity).where(active, Opportunity.stage.in_(domain.OPEN_STAGES))).unique().all()
@@ -1668,7 +1631,6 @@ def agenda(s: Session, actor: Actor | None = None) -> dict:
         "new_leads": [summary(o) for o in leads[:30]],
         "new_leads_total": len(leads),
         "upcoming": [rem(r, o) for r, o in upcoming],
-        "agent_due": [rem(r, o) for r, o in agent_due],
         "needs_review": s.scalar(select(func.count()).where(Opportunity.needs_review.is_(True), active)) or 0,
         "unread_notifications": s.scalar(select(func.count()).where(Notification.read_at.is_(None))) or 0,
         "messages_need_review": sum(s.scalar(select(func.count()).where(m.needs_review.is_(True), m.archived_at.is_(None))) or 0

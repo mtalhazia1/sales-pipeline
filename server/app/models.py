@@ -161,9 +161,6 @@ class Reminder(Base):
     due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     note: Mapped[str] = mapped_column(String(500), default="")
     done_at: Mapped[datetime | None] = mapped_column(DateTime)
-    # The agent whose own follow-up this is (null = the owner's step). It counts as the deal's next step
-    # but reaches the owner's Today only once it's missed.
-    agent: Mapped[str | None] = mapped_column(String(120))
     created_by: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     opportunity: Mapped[Opportunity] = relationship(back_populates="reminders")

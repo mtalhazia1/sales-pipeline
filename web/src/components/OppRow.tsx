@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { Bell, Bot, Inbox } from "lucide-react";
-import type { ReminderRef, Summary } from "../lib/api";
+import { Bell, Inbox } from "lucide-react";
+import type { Summary } from "../lib/api";
 import { ago, due, money } from "../lib/format";
 import { labelOf, useMeta } from "../lib/meta";
 import { useDrawer } from "../lib/hooks";
@@ -13,20 +13,6 @@ export const DUE_TONE = {
   later: "text-muted",
 };
 
-/** A deal's next step: the owner's own (bell, coloured by how due it is) or, when they have none, an agent's
- *  follow-up (bot, muted: it's the agent's to do, and reaches Today only if missed). */
-export function NextStep({ r, className }: { r: ReminderRef; className?: string }) {
-  const d = due(r.due_at);
-  return (
-    <span
-      className={cx("inline-flex items-center gap-1", r.for_agent ? "text-muted" : DUE_TONE[d.tone], className)}
-      title={r.for_agent ? `${r.agent}'s follow-up: ${r.note}` : r.note || undefined}
-    >
-      {r.for_agent ? <Bot size={11} /> : <Bell size={11} />} {d.text}
-    </span>
-  );
-}
-
 /** One opportunity as a row: used on Today, Review and the list view. */
 export function OppRow({ opp, right, meta: extra, showStage = true, showNext = true }: {
   opp: Summary;
@@ -37,7 +23,7 @@ export function OppRow({ opp, right, meta: extra, showStage = true, showNext = t
 }) {
   const { data: meta } = useMeta();
   const drawer = useDrawer();
-  const rem = showNext ? opp.next_reminder : null;
+  const rem = showNext && opp.next_reminder ? due(opp.next_reminder.due_at) : null;
   return (
     <div
       className="group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition outline-none hover:bg-panel-2 focus-visible:ring-2 focus-visible:ring-accent"
@@ -63,13 +49,19 @@ export function OppRow({ opp, right, meta: extra, showStage = true, showNext = t
           {extra}
           {/* phones: the stage and next step live here, the right-hand column is hidden */}
           {showStage && <StagePill stage={opp.stage} className="sm:hidden" />}
-          {rem && <NextStep r={rem} className="text-xs sm:hidden" />}
+          {rem && (
+            <span className={cx("inline-flex items-center gap-1 text-xs sm:hidden", DUE_TONE[rem.tone])}>
+              <Bell size={11} /> {rem.text}
+            </span>
+          )}
         </div>
       </div>
       <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
         {showStage && <StagePill stage={opp.stage} />}
         {rem ? (
-          <NextStep r={rem} className="text-xs" />
+          <span className={cx("inline-flex items-center gap-1 text-xs", DUE_TONE[rem.tone])}>
+            <Bell size={11} /> {rem.text}
+          </span>
         ) : (
           <span className="text-xs text-muted">{ago(opp.last_activity_at)}</span>
         )}

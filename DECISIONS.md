@@ -358,3 +358,11 @@ only in agent state, Today showed the deal as "gone quiet".
   icon, muted, not as overdue owner tasks; the timeline shows "Agent follow-up", "took on" and "Handed to you".
 - An agent's bookkeeping on its own follow-up (set, done, reschedule) doesn't flag the deal for Review; handing
   it over does. Only agents can set for_agent=true (a person's reminder is theirs).
+
+## Agent follow-ups reverted — 2026-10-19
+
+Owner's call: keep the system minimal. Following up with clients is entirely the owner's; the system is built
+for first contact only for now. Reminders are the owner's only again: `for_agent`, `agent_due`, "Take over" and
+the agent follow-up labels are gone (migration `a3e9f2c7b815` drops the column; the two earlier ones stay, as
+production applied them). Kept from that work: `update` and `update_reminder` take the write lock, and the
+guide's "give back only within the same counter window".

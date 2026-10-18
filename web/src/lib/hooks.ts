@@ -75,8 +75,7 @@ export function useOppActions() {
         api.post<Reminder>(`/opportunities/${id}/reminders`, { due_at, note: note ?? "" }),
       "Reminder set",
     ),
-    // for_agent: false = the owner takes over an agent's follow-up.
-    reminder: m(({ reminderId, ...patch }: { id?: number; reminderId: number; done?: boolean; due_at?: string; note?: string; for_agent?: boolean }) =>
+    reminder: m(({ reminderId, ...patch }: { id?: number; reminderId: number; done?: boolean; due_at?: string; note?: string }) =>
       api.patch<Reminder>(`/reminders/${reminderId}`, patch),
     ),
     deleteReminder: m(({ reminderId }: { id?: number; reminderId: number }) => api.del(`/reminders/${reminderId}`)),
