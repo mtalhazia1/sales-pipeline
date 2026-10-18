@@ -69,8 +69,9 @@ The owner:
   a call time, a close deadline), not for routine progress: the activity log already shows that.
 - Everything you write about deals and templates goes to their review, so keep it factual and short.
 - You can't delete deals, timeline entries, messages or categories. A deal added by mistake: log a
-  note starting "DELETE:". A wrong timeline entry: log a note correcting it and put back what it moved
-  (stage, inbound, waiting_on) with update_opportunity. A wrong template or category: notify_owner.
+  note starting "DELETE:". A wrong timeline entry: log a note correcting it, put back what you can
+  with update_opportunity (stage, inbound) and tell the owner what's left. A wrong template or category:
+  notify_owner.
 - Dates: YYYY-MM-DD (09:00 in the owner's timezone) or an ISO-8601 time with an offset or Z (one
   without is read in the owner's timezone). Times come back in UTC; get_agenda gives today and the
   timezone. Pass "" to clear a text field.
@@ -80,7 +81,7 @@ Scheduled agents:
   counters, due rows, your last summary), seen to skip items you already evaluated, count before each
   capped action, run_end last with your changes. state_get / state_set share lists between agents
   (e.g. contacts already emailed). A stop row is a brake set by the owner or another agent: obey it
-  (count refuses spending in its namespace).
+  (count refuses any spending in a call that involves its namespace).
 """
 
 mcp = MCPServer(
@@ -176,7 +177,7 @@ def add_opportunity(
     resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
     resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
     cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
-    reminder_at: Annotated[str | None, Field(description="First next step (open deals only): YYYY-MM-DD or ISO datetime")] = None,
+    reminder_at: Annotated[str | None, Field(description="First next step (not on a lost deal): YYYY-MM-DD or ISO datetime")] = None,
     reminder_note: Annotated[str | None, Field(description="What that next step is")] = None,
 ) -> Result:
     """Add a job or project; returns created and the deal's summary. If application_url is a posting
@@ -376,7 +377,7 @@ class CountItem(BaseModel):
     ns: str
     key: str
     period: CounterPeriod = "day"
-    by: Annotated[int, Field(description="Units to spend; 0 reads (allowed = room for one more); negative gives back")] = 1
+    by: Annotated[int, Field(description="Units to spend; 0 reads (allowed = room for one more, false during a stop); negative gives back")] = 1
     limit: Annotated[int | None, Field(ge=0, description="Refuse if this would pass it")] = None
 
 
@@ -389,8 +390,8 @@ def run_start(
     lease_min: Annotated[int, Field(ge=1, le=1440, description="Minutes before a crashed run frees the lease")] = 50,
 ) -> Result:
     """Call first in every scheduled run. Returns run_id, now, your fixed sections (`owner` names the owner's
-    rows), list sizes, stops from `also`, counters, this worker's last run, and per `include` list its rows
-    due now (earliest first, max 50); empty keys are left out. busy=true: this worker is already running;
+    locked ones), list sizes, stops from `also`, counters, this worker's last run, and per `include` list its rows
+    due now (earliest first, max 50); empty keys left out. busy=true: this worker is already running;
     stop (no run_end). A stop: spend nothing in its namespace."""
     return _run(service.run_start, ns, worker, also, include, lease_min)
 
@@ -441,7 +442,7 @@ def state_set(
 @mcp.tool(annotations=WRITE)
 def count(
     items: Annotated[list[CountItem], Field(min_length=1, max_length=20)],
-    idem: Annotated[str | None, Field(description="Unique key per action; retrying the same call within 24h replays its first success")] = None,
+    idem: Annotated[str | None, Field(description="Unique key per action; retrying the same call within 24h replays its first success (not for read-only calls; a stop beats a replay)")] = None,
 ) -> Result:
     """Check and spend caps before an action, all or nothing. ok=false: nothing counted, don't act —
     `refused` names the cap, or `stopped` quotes the stop: a call that spends is refused while any of its

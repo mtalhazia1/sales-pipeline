@@ -57,10 +57,11 @@ per key. Read lists with `state_get`. Give a list row a `due` time to schedule i
 rows of the lists you name in `include`. This is where your own to-dos go. Deal reminders (`set_reminder`) are
 the owner's Today list, for steps they should see or take.
 
-**Owner rows** are the ones the owner locked (`locked: true`, listed under `owner` in the brief): instructions,
-follow them. In fixed sections you can't change them. In lists you can add or update fields and change `due`, but
-not remove fields or delete the row: when you've done what one asks, merge the outcome (e.g. `{"done": true,
-"result": "…"}`) and clear its `due`; the owner removes it. If one looks wrong or out of date, say so with
+**Owner rows** are the ones the owner locked (`locked: true` on the row; in fixed sections the brief also lists
+them under `owner`): instructions, follow them. In fixed sections you can't change them. In lists you can add or
+update fields and change `due`, but not remove fields or delete the row: when you've done what one asks, clear its
+`due` and merge the outcome into it (e.g. `{"done": true, "result": "…"}`). If its value is text rather than a JSON
+object, nothing can be merged: record the outcome in a row of your own. The owner removes it. If one looks wrong or out of date, say so with
 `notify_owner` or a `proposal` row instead of working around it.
 
 **Hearing back from the owner.** When the owner actually needs to act, call `notify_owner`: that's what reaches
@@ -117,8 +118,9 @@ ns and worker: run count, statuses, summed counts, and the latest 20 summaries o
   daily budget and your own share.
 - `idem`: a key unique to this action (e.g. the job id). Retrying the same call within 24h replays the first
   success instead of spending twice; the same key with different items is a new spend. A call that only
-  reads is never replayed, and a stop beats a replay: if your first call may have counted, give it back
-  (`by: -1`, which works during a stop).
+  reads is never replayed, and a stop beats a replay: if a stop refuses your retry, retry the same call once
+  the stop clears (the replay then confirms it counted once). Don't give it back: the stored success would
+  still replay later and let you act without spending.
 → `ok`, and `counters` with each `value` and `allowed`. All or nothing: when `ok` is false nothing was counted;
 `refused` names the cap, or `stopped` quotes the stop rows: a call that spends is refused while any of its
 namespaces has a stop. A call that only reads or gives back still works then: its reply carries `stopped` too,

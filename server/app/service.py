@@ -374,8 +374,8 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
         raise ServiceError("company is required.")
     _check_stage(values["stage"], values["channel"])
     _check_lost(values["stage"], values.get("lost_reason"))
-    if data.get("reminder_at") and values["stage"] in domain.CLOSED_STAGES:
-        raise ServiceError("A won or lost deal has no next step: leave out reminder_at.")
+    if data.get("reminder_at") and values["stage"] == "lost":  # a won deal can have one (kickoff, invoice)
+        raise ServiceError("A lost deal has no next step: leave out reminder_at.")
     now = utcnow()
     opp = Opportunity(**values, url_key=url_key(values.get("application_url")), created_by=actor.name,
                       needs_review=actor.is_agent, created_at=now, updated_at=now, last_activity_at=now)

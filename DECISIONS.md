@@ -311,8 +311,10 @@ fresh agent working only from that text on a scratch server.
   namespace of the call. That's how an agent honours a shared namespace's stop. Reads and give-backs alone still
   pass; their reply carries `stopped`, and a read shows `allowed: false`.
 - `idem` is ignored for calls that only read (replaying one showed a stale value).
-- A deal added as won or lost refuses `reminder_at` (it would sit on Today); a rejected change carries its
-  `index` in `changes`.
+- A deal added as lost refuses `reminder_at` (it would sit on Today; a won deal may keep one, e.g. kickoff); a
+  rejected change carries its `index` in `changes`.
+- After a stop refuses an idem retry, the agent retries the same call once the stop clears instead of giving the
+  spend back (a give-back doesn't remove the stored success, so a later replay would act without spending).
 - Docs: owner rows are the locked ones (an owner edit to an agent's row answers it, the row stays the agent's);
   finishing an owner list to-do = merge the outcome and clear `due`; next steps are for deals past lead;
   how to undo a wrong timeline entry; lease timing; UTC counter days; a stop beats an idem replay.

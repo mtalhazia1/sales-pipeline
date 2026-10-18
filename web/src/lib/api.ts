@@ -220,7 +220,7 @@ export type StateView = {
 
 export type StateChangeResult = {
   applied?: { section: string; key: string; ns?: string; value?: unknown }[];
-  rejected?: { section?: string; key?: string; ns?: string; reason: string }[];
+  rejected?: { index: number; section?: string; key?: string; ns?: string; reason: string }[];
 };
 
 /** One scheduled agent run; status is "running" while it holds its lease. */

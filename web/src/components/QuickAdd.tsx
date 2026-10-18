@@ -35,7 +35,8 @@ export function QuickAdd({ open, onClose }: { open: boolean; onClose: () => void
     if (!channelTouched) set("channel", channelFromUrl(url, meta) ?? "");
   };
   const channel = f.channel || "other";
-  const stages = (meta?.stages ?? []).filter((s) => s.value !== "matcher" || channel === "toptal");
+  // Lost needs a reason, which this form doesn't ask for: mark a deal lost from its drawer.
+  const stages = (meta?.stages ?? []).filter((s) => s.value !== "lost" && (s.value !== "matcher" || channel === "toptal"));
   // "Sent to matcher" is Toptal-only: leaving Toptal moves the stage back to Applied.
   useEffect(() => {
     if (channel !== "toptal" && f.stage === "matcher") set("stage", "applied");
