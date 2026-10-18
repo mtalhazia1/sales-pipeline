@@ -91,6 +91,8 @@ call(service.state_set, OWNER, "linkedin-shared", [{"section": "stop", "key": "a
 r = call(service.count, [{"ns": "mail", "key": "sent", "limit": 10}, {"ns": "linkedin-shared", "key": "actions", "by": 0}], "k-stop")
 ok(not r["ok"] and r["stopped"] == "linkedin-shared account_warning: Paused by owner" and not any(c["allowed"] for c in r["counters"])
    and r["counters"][0]["value"] == 2, "count refused (nothing changed, every item) by a stop row in any listed ns")
+ok(call(service.count, [{"ns": "linkedin-shared", "key": "actions", "by": 0}])["ok"]
+   and call(service.count, [{"ns": "linkedin-shared", "key": "actions", "by": -1}])["ok"], "a stop blocks spending, not reads or give-backs")
 call(service.state_set, OWNER, "linkedin-shared", [{"section": "stop", "key": "account_warning", "op": "delete"}])
 ok(call(service.count, [{"ns": "linkedin-shared", "key": "actions"}])["ok"], "clearing the stop lets counting resume")
 
@@ -152,6 +154,10 @@ jane = call(service.state_get, "linkedin", ["contacts"])["state"]["linkedin"]["c
 ok(len(r["applied"]) == 1 and len(r["rejected"]) == 3 and all(x["reason"].startswith("owner_row") for x in r["rejected"])
    and jane["value"] == {"company": "Acme", "emailed": True} and jane["by"] == "owner" and jane["locked"]
    and jane["due_at"].startswith("2030-02-01"), "list owner row: agents may merge (and reschedule), not set, delete or expire it")
+r = call(service.state_set, AGENT, "linkedin", [{"section": "contacts", "key": "jane", "due": "2030-03-01"}])
+jane = call(service.state_get, "linkedin", ["contacts"])["state"]["linkedin"]["contacts"]["jane"]
+ok(r.get("applied") and jane["due_at"].startswith("2030-03-01") and jane["value"] == {"company": "Acme", "emailed": True},
+   "list owner row: a due-only change (no value, default op) is allowed")
 
 call(service.state_set, AGENT, "upwork", [{"section": "draft", "key": "d1", "value": "x", "expires": "1d"}])
 with session_scope() as s:

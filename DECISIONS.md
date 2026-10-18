@@ -287,3 +287,21 @@ Independent audit of the 2026-10-15 categories work and the examples change (ser
 - Left as is: a first message set by hand (Drawer / update_opportunity) or by the backfill counts toward
   reply rates without a logged use; a deleted message can't be logged again except on its own deal; the
   Drawer's first-message list includes every category; MCP validation errors from the SDK are multi-line.
+
+## Agent-facing text re-review — 2026-10-18
+
+Two audits: every claim in the MCP instructions, tool docs and AGENT_GUIDE.md checked against the code, and a
+fresh agent working only from that text on a scratch server.
+- **Stops block spending, not reads or give-backs.** Revision 2 said a stop refuses every count item; an agent
+  then couldn't check its budget or return a spend it didn't use. A call that spends is still refused whole.
+  Stops stay per namespace (not per key): the guide says to put a narrow brake in its own namespace.
+- **Owner list rows accept a due-only change** with the default op (before, only `op: merge` could reschedule).
+- add_opportunity takes `lost_reason`, so a deal can be added as lost.
+- MCP accepts any item in `changes`, so a non-object one is rejected alone instead of failing the whole call
+  (and leaving run_end's lease held).
+- Text: reminders vs agents' own to-dos (state list rows with due), how the owner's answers reach an agent, one
+  API key per agent, `seen(mark=false)` then mark, times without an offset are the owner's timezone, name rules,
+  `max` needs JSON numbers, `count` reads report `allowed`, lost completes reminders, and similar.
+- Left as is (documented instead): reminder notes are cut at 500 characters; `max` compares non-ISO text as text;
+  `due` on a fixed-section row is stored but nothing hands it to you; a duplicate notify_owner keeps the first
+  message.

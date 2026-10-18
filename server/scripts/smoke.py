@@ -98,7 +98,7 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         r4 = structured(await c.call_tool("log_activity", {"opportunity_id": opp["id"], "kind": "client_message", "summary": "Interested!"}))
         ok(r4["stage"] == "replied" and r4["waiting_on"] == "me", f"[{mode}] client_message: →replied, your move")
         bad = await c.call_tool("update_opportunity", {"opportunity_id": opp["id"], "stage": "matcher"})
-        ok(bad.is_error and "Toptal" in bad.content[0].text, f"[{mode}] matcher refused for non-Toptal")
+        ok(bad.is_error and "toptal" in bad.content[0].text, f"[{mode}] matcher refused for non-Toptal")
         bad = await c.call_tool("update_opportunity", {"opportunity_id": opp["id"], "stage": "lost"})
         ok(bad.is_error and "lost_reason" in bad.content[0].text, f"[{mode}] lost without a reason refused")
         rem_id = structured(await c.call_tool("get_opportunity", {"opportunity_id": opp["id"]}))["reminders"][0]["id"]
@@ -148,9 +148,10 @@ async def state_calls(c, mode: str) -> None:
        f"[{mode}] state_set: max keeps the larger, owner row rejected")
     mixed = structured(await c.call_tool("state_set", {"ns": ns, "changes": [
         {"section": "next", "key": "a", "op": "increment", "value": 1}, {"section": "next", "key": "b", "value": 1, "due_at": "x"},
-        {"section": "next", "key": "c", "value": 1}]}))
+        {"section": "next", "key": "c", "value": 1}, "not an object"]}))
     ok([a["key"] for a in mixed["applied"]] == ["c"] and "op must be" in mixed["rejected"][0]["reason"]
-       and "Unknown field" in mixed["rejected"][1]["reason"], f"[{mode}] one bad change is rejected alone; unknown fields aren't dropped silently")
+       and "Unknown field" in mixed["rejected"][1]["reason"] and "object" in mixed["rejected"][2]["reason"],
+       f"[{mode}] one bad change (even a non-object) is rejected alone; unknown fields aren't dropped silently")
     got = structured(await c.call_tool("state_get", {"ns": ns, "q": "smoke test acme"}))
     ok(list(got["state"][ns]["contacts"]) == ["jane@example.com"], f"[{mode}] state_get q finds a list row by its value")
     due = structured(await c.call_tool("state_get", {"ns": ns, "sections": ["contacts"], "due_before": "now", "limit": 5}))

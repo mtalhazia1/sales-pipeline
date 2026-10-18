@@ -68,7 +68,7 @@ ACTIVITY_KINDS: list[tuple[str, str]] = [
 # brief small; any other section name is a list (one row per key), read on demand with state_get.
 STATE_SECTIONS: list[tuple[str, str, int]] = [
     ("next", "Cursors, due times, statuses", 30),
-    ("stop", "Flags that halt an activity", 5),
+    ("stop", "Brakes: no spending in this namespace while set", 5),
     ("blocker", "Stuck: what the owner must do", 20),
     ("waiting", "Waiting on the owner", 20),
     ("lesson", "Short learned rules", 15),

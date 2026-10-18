@@ -22,7 +22,7 @@ Sales pipeline for a one-person B2B software / AI services business. The owner u
 opportunity they're pursuing and decide where to spend their time, so what you record should match
 what really happened. Each record is an *opportunity*: a job or project at a client company, found on
 a channel (LinkedIn, Email, Upwork, Toptal, Direct/Website, Referral), optionally reached through a
-network (LinkedIn, FirstGlance, Referral).
+network: how the owner knows them (a LinkedIn connection, FirstGlance, a referral or personal contact).
 
 Stages, in order: lead (found, nothing sent yet) → matcher (Toptal only: sent to a matcher) →
 applied → replied (client responded) → call (call booked) → proposal (proposal sent) →
@@ -40,7 +40,9 @@ Deals:
 - Record what happens with log_activity and let it move the stage, so the deal follows the
   conversation. Use update_opportunity for facts and for moves no message implies (proposal sent, won,
   lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no.
-- Keep a next step on every open deal with set_reminder; a deal without one gets forgotten.
+- Keep one next step on every open deal; a deal without one gets forgotten. set_reminder adds one,
+  update_reminder moves or rewords it (its id is next_reminder.id in the deal's summary). Reminders are
+  the owner's Today list: a scheduled agent's own to-dos belong in a state list row with `due`.
 - The job post goes in `description`, your assessment in `notes`, running commentary in a note
   activity. `fit` 1-5 is your judgment of the match (5 = ideal for an AI / full-stack software shop).
 - Job applications: the tailored resume and cover letter live in the owner's Google Drive; store their
@@ -65,16 +67,19 @@ The owner:
 - notify_owner when something needs them to act or decide (a question only they can answer, an offer,
   a call time, a close deadline), not for routine progress: the activity log already shows that.
 - Everything you write about deals and templates goes to their review, so keep it factual and short.
-- You can't delete. A deal added by mistake: log a note starting "DELETE:"; a wrong template or
+- You can't delete deals, timeline entries, messages or categories. A deal added by mistake: log a
+  note starting "DELETE:"; a wrong timeline entry: log a note correcting it; a wrong template or
   category: notify_owner.
-- Dates: YYYY-MM-DD (09:00 in the owner's timezone) or ISO-8601; get_agenda gives today and the
+- Dates: YYYY-MM-DD (09:00 in the owner's timezone) or an ISO-8601 time with an offset or Z (one
+  without is read in the owner's timezone). Times come back in UTC; get_agenda gives today and the
   timezone. Pass "" to clear a text field.
 
 Scheduled agents:
 - Keep run state here, never in local files or your own memory: run_start first (cursors, stops,
   counters, due rows, your last summary), seen to skip items you already evaluated, count before each
   capped action, run_end last with your changes. state_get / state_set share lists between agents
-  (e.g. contacts already emailed). A stop row is a brake set by the owner or another agent: obey it.
+  (e.g. contacts already emailed). A stop row is a brake set by the owner or another agent: obey it
+  (count refuses spending in its namespace).
 """
 
 mcp = MCPServer(
@@ -142,7 +147,8 @@ def find_opportunities(
 
 @mcp.tool(annotations=READ)
 def get_opportunity(opportunity_id: int) -> Result:
-    """Full record: every field, reminders and the timeline of messages, calls, notes and changes."""
+    """Full record: every field, reminders, and the latest 100 timeline events (messages, calls, notes,
+    changes)."""
     return _run(lambda s: service.detail(s, service._get(s, opportunity_id)))
 
 
@@ -153,9 +159,10 @@ def add_opportunity(
     title: Annotated[str | None, Field(description="Job / project title")] = None,
     application_url: Annotated[str | None, Field(description="The posting or application link — used to prevent duplicates")] = None,
     company_url: str | None = None,
-    channel: Annotated[Channel | None, Field(description="Where it was found; inferred from the URL when omitted")] = None,
-    network: Network = "none",
-    stage: Stage = "lead",
+    channel: Annotated[Channel | None, Field(description="Where it was found; when omitted, upwork / toptal / linkedin from the URL, else other")] = None,
+    network: Annotated[Network, Field(description="How the owner knows them")] = "none",
+    stage: Annotated[Stage, Field(description="Starting stage")] = "lead",
+    lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'")] = None,
     inbound: Annotated[bool, Field(description="True when the client reached out first")] = False,
     contact_name: str | None = None,
     contact_email: str | None = None,
@@ -172,9 +179,9 @@ def add_opportunity(
     reminder_note: Annotated[str | None, Field(description="What that next step is")] = None,
 ) -> Result:
     """Add a job or project; returns created and the deal's summary. If application_url is a posting
-    already tracked, nothing changes and that deal comes back with created=false (change it with
-    update_opportunity / log_activity); a different role at the same company needs its own URL.
-    deleted=true means the owner deleted it on purpose: leave it alone."""
+    already tracked, nothing changes and that deal comes back with created=false (then use
+    update_opportunity). Roles sharing one URL (a careers page) count as one posting:
+    pass each role's own link, or none. deleted=true means the owner deleted it on purpose: leave it alone."""
     data = {k: v for k, v in locals().items() if v is not None}
 
     def go(s):
@@ -186,8 +193,8 @@ def add_opportunity(
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_opportunity(
     opportunity_id: int,
-    stage: Annotated[Stage | None, Field(description="For moves no message implies (proposal, won, lost); log_activity moves the rest")] = None,
-    lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'. no_response = they went silent (a later client_message reopens it); the others are final")] = None,
+    stage: Annotated[Stage | None, Field(description="For moves no message implies (proposal, won, lost); log_activity moves the rest. lost also completes the deal's open reminders")] = None,
+    lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'. no_response = they went silent: a later client_message reopens only that kind")] = None,
     waiting_on: WaitingOn | None = None,
     company: str | None = None,
     title: str | None = None,
@@ -222,14 +229,14 @@ def log_activity(
     opportunity_id: int,
     kind: Annotated[ActivityKind, Field(description="client_message = the client wrote; my_message = you or the owner sent something; call = booked or held; note = commentary")],
     summary: Annotated[str, Field(description="What was said or happened, briefly; for a message you sent from a template, the text you actually sent")],
-    occurred_at: Annotated[str | None, Field(description="When it happened, if earlier (default now); never in the future")] = None,
+    occurred_at: Annotated[str | None, Field(description="When it happened, if not now: ISO time or YYYY-MM-DD (09:00 owner's time); refused if over 10 min ahead")] = None,
     template_id: Annotated[int | None, Field(ge=1, description="kind=my_message only: id of the template your message was based on")] = None,
     channel: Annotated[Channel | None, Field(description="kind=my_message only: where you sent it, if not the deal's channel (e.g. emailed a LinkedIn lead)")] = None,
 ) -> Result:
     """Record a message, call or note on the timeline; it moves the deal along by itself:
     client_message → stage replied (if earlier) and it's the owner's move; my_message → a lead becomes
-    applied and it's the client's move; call → stage call (put the call time in set_reminder). note
-    changes nothing. Returns the deal's summary."""
+    applied and it's the client's move; call → stage call if earlier (put the call time in set_reminder).
+    note changes nothing. Returns the deal's summary."""
     return _run(lambda s: service.summary(service.log_activity(s, _actor(), opportunity_id, kind, summary, occurred_at,
                                                                template_id, channel)))
 
@@ -277,8 +284,8 @@ def save_message_template(
     category: Annotated[str | None, Field(description="Category key; required when creating")] = None,
     name: Annotated[str | None, Field(description="Short label, e.g. 'Short intro v2'; required when creating")] = None,
     body: Annotated[str | None, Field(description="The example message; {placeholders} like {first_name} mark what changes per person. Required when creating")] = None,
-    subject: Annotated[str | None, Field(description="Subject line, for categories with has_subject")] = None,
-    make_current: Annotated[bool | None, Field(description="true = this becomes the one agents work from in its category (only the owner can unset it)")] = None,
+    subject: Annotated[str | None, Field(description="Subject line: required in categories with has_subject, ignored in others")] = None,
+    make_current: Annotated[bool | None, Field(description="true = this becomes the one agents work from in its category (a category's first message is current anyway; only the owner can unset it)")] = None,
     template_id: Annotated[int | None, Field(ge=1, description="An existing message's id to change it; omit to create a new one")] = None,
 ) -> Result:
     """Create a message in a category (omit template_id) or edit one (pass it; only the fields you pass
@@ -300,10 +307,10 @@ def save_message_template(
 def set_reminder(
     opportunity_id: int,
     due: Annotated[str, Field(description="YYYY-MM-DD (09:00 owner's time) or ISO datetime")],
-    note: Annotated[str, Field(description="The next step, e.g. 'Follow up if no reply'")] = "",
+    note: Annotated[str, Field(description="The next step, e.g. 'Follow up if no reply' (max 500 characters)")] = "",
 ) -> Result:
-    """Schedule the next step for an opportunity; returns the reminder (with its id). It shows up on the
-    owner's Today list when due."""
+    """Add a next step to an opportunity; returns the reminder (with its id). It shows up on the owner's
+    Today list when due. Each call adds one: to move or reword the existing next step, use update_reminder."""
     return _run(lambda s: service.reminder_dict(service.add_reminder(s, _actor(), opportunity_id, due, note)))
 
 
@@ -312,9 +319,10 @@ def update_reminder(
     reminder_id: int,
     done: Annotated[bool | None, Field(description="true = done; false = reopen")] = None,
     due: Annotated[str | None, Field(description="Reschedule: YYYY-MM-DD or ISO datetime")] = None,
-    note: str | None = None,
+    note: Annotated[str | None, Field(description="New wording (max 500 characters)")] = None,
 ) -> Result:
-    """Complete, reschedule or reword a reminder (ids are in get_opportunity and get_agenda)."""
+    """Complete, reschedule or reword a reminder; returns it. Ids are in get_opportunity, get_agenda and
+    each deal summary's next_reminder."""
     if done is None and due is None and note is None:
         raise ToolError("Pass done, due or note.")
     return _run(lambda s: service.reminder_dict(service.update_reminder(s, _actor(), reminder_id, done=done, due=due, note=note)))
@@ -339,8 +347,8 @@ def notify_owner(
 @mcp.tool(annotations=READ)
 def get_agenda() -> Result:
     """Today's priorities: due/overdue reminders, deals where the owner owes a reply, open deals that
-    went quiet without a next step, best new leads, the coming week's reminders, and how many of your
-    alerts the owner hasn't read yet."""
+    went quiet without a next step, best new leads, the coming week's reminders, how many alerts (from
+    any agent) the owner hasn't read, and today's date and the timezone."""
     return _run(service.agenda)
 
 
@@ -356,19 +364,18 @@ def pipeline_stats(days: Annotated[int | None, Field(ge=1, description="Look-bac
 
 # A change is a plain object, checked one by one in the service: a typed model would make pydantic reject the
 # whole call (and leave a run_end's lease held) over one bad change, and drop unknown fields silently.
-CHANGES_DOC = ("Each {section, key, value, op, due, expires, ns}. value: text, number or JSON (fixed sections max "
-               "500 characters, lists 16,000); null deletes; omit it to change only due/expires. op: set (default) | "
-               "merge (update fields of a JSON object; null drops one) | max (keep the larger: numbers, or ISO times) | "
-               "delete. due (list rows: when to work it) and expires: ISO time, now, or 30m/12h/7d; null clears, "
-               "omitted keeps. ns: another namespace, e.g. a shared one.")
-Changes = list[dict[str, Any]]
+CHANGES_DOC = ("Objects {section, key, value, op, due, expires, ns}. value: text, number or JSON; null deletes; omit "
+               "to change only due/expires. op: set (default) | merge (JSON fields; null drops one) | max (larger "
+               "number or ISO time) | delete. due, expires: ISO, now or 30m/12h/7d; null clears. ns: another "
+               "namespace.")
+Changes = list[Any]
 
 
 class CountItem(BaseModel):
     ns: str
     key: str
     period: CounterPeriod = "day"
-    by: Annotated[int, Field(description="Units to spend; 0 reads; negative gives back")] = 1
+    by: Annotated[int, Field(description="Units to spend; 0 reads (allowed = room for one more); negative gives back")] = 1
     limit: Annotated[int | None, Field(ge=0, description="Refuse if this would pass it")] = None
 
 
@@ -382,7 +389,8 @@ def run_start(
 ) -> Result:
     """Call first in every scheduled run. Returns run_id, now, your fixed sections (`owner` names the owner's
     rows), list sizes, stops from `also`, counters, this worker's last run, and per `include` list its rows
-    due now (earliest first, max 50). busy=true: this worker is already running; stop. Obey every stop."""
+    due now (earliest first, max 50); empty keys are left out. busy=true: this worker is already running;
+    stop, with no run_end. Obey every stop."""
     return _run(service.run_start, ns, worker, also, include, lease_min)
 
 
@@ -410,9 +418,10 @@ def state_get(
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
     runs_since: Annotated[str | None, Field(description="e.g. 24h or an ISO time: adds a run digest per ns and worker")] = None,
 ) -> Result:
-    """Read rows grouped ns → section → key (value, by, updated_at, due_at; locked = an owner row), earliest
-    due first; more=true if limit cut it. runs_since adds per worker: run count, count by status, summed
-    counts, summaries of non-quiet runs; then rows come only with sections, keys, q or due_before."""
+    """Read rows grouped ns → section → key (value, by, updated_at, due_at, expires_at; locked = an owner
+    row), earliest due first; more=true if limit cut it. runs_since adds per worker: run count, count by
+    status, summed counts, the latest 20 non-quiet summaries; then rows come only with sections, keys, q or
+    due_before."""
     return _run(service.state_get, ns, sections, keys, q, due_before, limit, runs_since)
 
 
@@ -424,7 +433,7 @@ def state_set(
     """Write rows; each invalid change is rejected with its reason. Fixed sections (in run_start, values max
     500 characters, row caps): next 30, stop 5, blocker 20, waiting 20, lesson 15, platform 10, proposal 10.
     Any other section is a list: 500 rows, values max 16,000, schedulable with due. Owner rows: fixed are
-    read-only; in lists only merge."""
+    read-only; in lists merge fields or change due."""
     return _run(lambda s: service.state_set(s, _actor(), ns, changes))
 
 
@@ -434,8 +443,8 @@ def count(
     idem: Annotated[str | None, Field(description="Unique key per action; retrying the same call within 24h replays its first success")] = None,
 ) -> Result:
     """Check and spend caps before an action, all or nothing. ok=false: nothing counted, don't act —
-    `refused` names the cap, or `stopped` quotes a stop row in one of the namespaces. Windows (UTC): day,
-    week (ISO), month, total; a new window starts at 0. One item per cap, e.g. a shared daily and your own."""
+    `refused` names the cap, or `stopped` quotes a stop row: a stop halts spending (not reads or give-backs)
+    in its namespace. Windows (UTC): day, week (ISO), month, total. One item per cap."""
     return _run(service.count, [i.model_dump(exclude_none=True) for i in items], idem)
 
 
@@ -448,5 +457,6 @@ def seen(
     ttl_days: Annotated[int, Field(ge=1, le=3650, description="How long they stay seen")] = service.SEEN_DAYS,
 ) -> Result:
     """Skip what you already evaluated: returns `new`, the ids not seen in this ns+source (or whose ttl ran
-    out), as you sent them, and marks them seen for ttl_days."""
+    out), as you sent them, and marks them seen for ttl_days. With mark=false, mark them once you've
+    actually evaluated them, so a run cut short doesn't skip the rest."""
     return _run(service.seen, ns, source, ids, mark, ttl_days)

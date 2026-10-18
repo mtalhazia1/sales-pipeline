@@ -196,7 +196,7 @@ def _clean(field: str, value: Any) -> Any:
         except (TypeError, ValueError):
             raise ServiceError("value is a number in USD.") from None
         if not math.isfinite(value) or value < 0:
-            raise ServiceError("value must be a positive number in USD.")
+            raise ServiceError("value must be a number ≥ 0 in USD.")
     if field == "inbound":
         if isinstance(value, str):
             if value.lower() not in ("true", "false", "1", "0", "yes", "no"):
@@ -397,7 +397,7 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
 
 def _check_stage(stage: str, channel: str) -> None:
     if stage == "matcher" and channel != "toptal":
-        raise ServiceError("'Sent to matcher' only applies to Toptal opportunities.")
+        raise ServiceError("stage 'matcher' only applies with channel 'toptal'.")
 
 
 def _check_lost(stage: str, lost_reason: str | None) -> None:
@@ -1145,9 +1145,9 @@ def _apply_change(s: Session, actor: Actor, default_ns: str, ch: Any, now: datet
     deleting = op == "delete" or (has_value and value is None)
     if live and live.locked and actor.is_agent:
         drops = op == "merge" and isinstance(value, dict) and any(v is None for v in value.values())
-        if fixed or op != "merge" or deleting or "expires" in when or drops:
+        if fixed or (op != "merge" and has_value) or deleting or "expires" in when or drops:
             raise ServiceError("owner_row: the owner set this row; " + (
-                "agents can only read it." if fixed else "agents may only merge new or updated fields into it (and set due)."))
+                "agents can only read it." if fixed else "agents may only merge new or updated fields into it, or change its due."))
     if deleting:
         if row:
             s.delete(row)
@@ -1255,7 +1255,7 @@ def _current_counters(s: Session, ns: list[str], now: datetime) -> dict:
 
 def count(s: Session, items: Any, idem: Any = None) -> dict:
     """Spend (by > 0), read (by 0) or give back (by < 0, never below 0) counters, all or nothing: if any
-    spend would pass its limit, or any ns in the call has a `stop` row, nothing changes. Limits come from
+    spend would pass its limit, or the call spends while any of its ns has a `stop` row, nothing changes. Limits come from
     the caller; the server stores no policy. With `idem`, a repeat within 24 hours replays the first
     successful reply instead of spending again (a refusal spent nothing, so it is never replayed)."""
     if not isinstance(items, list) or not 1 <= len(items) <= 20:
@@ -1287,10 +1287,11 @@ def count(s: Session, items: Any, idem: Any = None) -> dict:
             {"ns": ns, "key": key, "period": period, "value": values[(ns, key, period, _bucket(period, now))], "allowed": ok}
             for (ns, key, period, _, _), ok in zip(parsed, ok_each, strict=True)]}
 
-    # A halt beats everything, even a replay: the owner or an agent stopped this activity.
+    # A halt beats everything, even a replay: the owner or an agent stopped spending in this namespace.
+    # Reads and give-backs still pass, so an agent can check its budget or return what it didn't use.
     stops = s.scalars(select(StateRow).where(StateRow.ns.in_({p[0] for p in parsed}), StateRow.section == "stop",
                                              _live_rows(now)).order_by(StateRow.ns, StateRow.key)).all()
-    if stops:
+    if stops and any(p[3] > 0 for p in parsed):
         return reply([False] * len(parsed), {"stopped": "; ".join(f"{r.ns} {r.key}: {_text(r.value)}" for r in stops)})
     # Scoped to this exact call: the same idem with other items (another agent, another cap) is a new call.
     key = hashlib.sha256(json.dumps([idem.strip(), parsed]).encode()).hexdigest() if idem else None
