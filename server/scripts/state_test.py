@@ -86,6 +86,10 @@ ok(call(service.count, once, "mail:jane@example.com")["counters"][0]["value"] ==
 full = [{"ns": "mail", "key": "tiny", "limit": 0}]
 ok(not call(service.count, full, "k-full")["ok"] and not call(lambda s: s.get(IdemKey, "k-full")),
    "a refusal isn't stored, so a retry is judged afresh")
+look = [{"ns": "mail", "key": "peek", "by": 0}]
+before_read = call(service.count, look, "k-read")["counters"][0]["value"]
+call(service.count, [{"ns": "mail", "key": "peek"}])
+ok(call(service.count, look, "k-read")["counters"][0]["value"] == before_read + 1, "a read with idem is never replayed (no stale value)")
 
 call(service.state_set, OWNER, "linkedin-shared", [{"section": "stop", "key": "account_warning", "value": "Paused by owner"}])
 r = call(service.count, [{"ns": "mail", "key": "sent", "limit": 10}, {"ns": "linkedin-shared", "key": "actions", "by": 0}], "k-stop")
@@ -93,6 +97,9 @@ ok(not r["ok"] and r["stopped"] == "linkedin-shared account_warning: Paused by o
    and r["counters"][0]["value"] == 2, "count refused (nothing changed, every item) by a stop row in any listed ns")
 ok(call(service.count, [{"ns": "linkedin-shared", "key": "actions", "by": 0}])["ok"]
    and call(service.count, [{"ns": "linkedin-shared", "key": "actions", "by": -1}])["ok"], "a stop blocks spending, not reads or give-backs")
+r = call(service.count, [{"ns": "linkedin-shared", "key": "actions", "by": 0, "limit": 5}])
+ok(r["ok"] and r["stopped"].startswith("linkedin-shared account_warning") and not r["counters"][0]["allowed"],
+   "a read during a stop names the stop and shows no room")
 call(service.state_set, OWNER, "linkedin-shared", [{"section": "stop", "key": "account_warning", "op": "delete"}])
 ok(call(service.count, [{"ns": "linkedin-shared", "key": "actions"}])["ok"], "clearing the stop lets counting resume")
 
@@ -130,6 +137,7 @@ ok(len(merged) == 30, f"30 concurrent merges into one row from different workers
 
 r = call(service.state_set, AGENT, "linkedin", [{"section": "stop", "key": f"s{i}", "value": "halt"} for i in range(6)])
 ok(len(r["applied"]) == 5 and "full (5 rows" in r["rejected"][0]["reason"], "stop is capped at 5; the 6th is rejected")
+ok(r["rejected"][0]["index"] == 5, "a rejected change carries its index in changes")
 r = call(service.state_set, AGENT, "linkedin", [{"section": "stop", "key": "s0", "value": "still"}])
 ok(r["applied"] and not r.get("rejected"), "changing a row in a full section is fine")
 

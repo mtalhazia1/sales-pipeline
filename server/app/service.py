@@ -374,6 +374,8 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
         raise ServiceError("company is required.")
     _check_stage(values["stage"], values["channel"])
     _check_lost(values["stage"], values.get("lost_reason"))
+    if data.get("reminder_at") and values["stage"] in domain.CLOSED_STAGES:
+        raise ServiceError("A won or lost deal has no next step: leave out reminder_at.")
     now = utcnow()
     opp = Opportunity(**values, url_key=url_key(values.get("application_url")), created_by=actor.name,
                       needs_review=actor.is_agent, created_at=now, updated_at=now, last_activity_at=now)
@@ -1117,7 +1119,7 @@ def state_row_dict(r: StateRow, *, full: bool = True) -> dict:
 
 def _apply_change(s: Session, actor: Actor, default_ns: str, ch: Any, now: datetime) -> dict:
     if not isinstance(ch, dict):
-        raise ServiceError("Each change is an object {section, key, value, op, due, expires}.")
+        raise ServiceError("Each change is an object {section, key, value, op, due, expires, ns}.")
     unknown = set(ch) - {"ns", "section", "key", "value", "op", "due", "expires", "locked"}
     if unknown:
         raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
@@ -1200,12 +1202,12 @@ def state_set(s: Session, actor: Actor, ns: str, changes: Any) -> dict:
     _write_lock(s)
     now = utcnow()
     applied, rejected = [], []
-    for ch in changes:
+    for i, ch in enumerate(changes):
         try:
             applied.append(_apply_change(s, actor, ns, ch, now))
         except ServiceError as e:
             where = {k: ch[k] for k in ("ns", "section", "key") if isinstance(ch, dict) and isinstance(ch.get(k), str)}
-            rejected.append({**where, "reason": e.message})
+            rejected.append({"index": i, **where, "reason": e.message})  # index: its place in `changes`
     return {k: v for k, v in {"applied": applied, "rejected": rejected}.items() if v}
 
 
@@ -1287,14 +1289,18 @@ def count(s: Session, items: Any, idem: Any = None) -> dict:
             {"ns": ns, "key": key, "period": period, "value": values[(ns, key, period, _bucket(period, now))], "allowed": ok}
             for (ns, key, period, _, _), ok in zip(parsed, ok_each, strict=True)]}
 
-    # A halt beats everything, even a replay: the owner or an agent stopped spending in this namespace.
-    # Reads and give-backs still pass, so an agent can check its budget or return what it didn't use.
+    # A halt beats everything, even a replay: a call that spends is refused while any of its namespaces has
+    # a stop. Reads and give-backs still pass (an agent can check its budget or return what it didn't use);
+    # their reply names the stop, and a read shows no room.
     stops = s.scalars(select(StateRow).where(StateRow.ns.in_({p[0] for p in parsed}), StateRow.section == "stop",
                                              _live_rows(now)).order_by(StateRow.ns, StateRow.key)).all()
-    if stops and any(p[3] > 0 for p in parsed):
-        return reply([False] * len(parsed), {"stopped": "; ".join(f"{r.ns} {r.key}: {_text(r.value)}" for r in stops)})
+    stopped = "; ".join(f"{r.ns} {r.key}: {_text(r.value)}" for r in stops)
+    if stopped and any(p[3] > 0 for p in parsed):
+        return reply([False] * len(parsed), {"stopped": stopped})
     # Scoped to this exact call: the same idem with other items (another agent, another cap) is a new call.
-    key = hashlib.sha256(json.dumps([idem.strip(), parsed]).encode()).hexdigest() if idem else None
+    # A pure read changes nothing, so it is never replayed (that would show a stale value).
+    changes_something = any(p[3] != 0 for p in parsed)
+    key = hashlib.sha256(json.dumps([idem.strip(), parsed]).encode()).hexdigest() if idem and changes_something else None
     if key and (prev := s.get(IdemKey, key)) and prev.created_at > now - IDEM_TTL:
         return prev.response
 
@@ -1303,6 +1309,7 @@ def count(s: Session, items: Any, idem: Any = None) -> dict:
         ident = (ns, k, period, _bucket(period, now))
         before = values[ident]
         ok = limit is None or by < 0 or before + max(by, 1) <= limit  # a read (by 0): is there room for one more?
+        ok = ok and not (stopped and by == 0)  # not while spending is stopped
         allowed.append(ok)
         if by > 0 and not ok:
             refused.append(f"{ns} {k} ({period}) is at {before} of {limit}")
@@ -1317,7 +1324,7 @@ def count(s: Session, items: Any, idem: Any = None) -> dict:
             rows[ident].value, rows[ident].updated_at = v, now
         else:
             s.add(StateCounter(ns=ident[0], key=ident[1], period=ident[2], bucket=ident[3], value=v, updated_at=now))
-    out = reply(allowed, {})
+    out = {**reply(allowed, {}), **({"stopped": stopped} if stopped else {})}
     if key:
         s.merge(IdemKey(key=key, response=out, created_at=now))
     return out

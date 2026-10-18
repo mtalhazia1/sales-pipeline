@@ -305,3 +305,16 @@ fresh agent working only from that text on a scratch server.
 - Left as is (documented instead): reminder notes are cut at 500 characters; `max` compares non-ISO text as text;
   `due` on a fixed-section row is stored but nothing hands it to you; a duplicate notify_owner keeps the first
   message.
+
+### Second pass — 2026-10-18
+- **A call that spends is refused while any namespace in it has a stop**, even if the spend is in another
+  namespace of the call. That's how an agent honours a shared namespace's stop. Reads and give-backs alone still
+  pass; their reply carries `stopped`, and a read shows `allowed: false`.
+- `idem` is ignored for calls that only read (replaying one showed a stale value).
+- A deal added as won or lost refuses `reminder_at` (it would sit on Today); a rejected change carries its
+  `index` in `changes`.
+- Docs: owner rows are the locked ones (an owner edit to an agent's row answers it, the row stays the agent's);
+  finishing an owner list to-do = merge the outcome and clear `due`; next steps are for deals past lead;
+  how to undo a wrong timeline entry; lease timing; UTC counter days; a stop beats an idem replay.
+- Left as is: run_start doesn't return the owner rows of `also` namespaces (the guide says to state_get them);
+  `waiting_on` can be set but not cleared.
