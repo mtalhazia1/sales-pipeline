@@ -190,9 +190,9 @@ function ReminderRow({ r }: { r: AgendaReminder }) {
       opp={r.opportunity}
       showNext={false}
       meta={
-        <span className={cx("inline-flex items-center gap-1 font-medium", DUE_TONE[d.tone])}>
-          {r.for_agent ? <Bot size={12} /> : <Bell size={12} />} {r.note || "Reminder"} · {d.text}
-          {r.for_agent && <span className="font-normal text-muted">· {r.created_by} missed this</span>}
+        <span className={cx("inline-flex flex-wrap items-center gap-x-1 font-medium", DUE_TONE[d.tone])}>
+          {r.for_agent ? <Bot size={12} className="shrink-0" /> : <Bell size={12} className="shrink-0" />} {r.note || "Reminder"} · {d.text}
+          {r.for_agent && <span className="font-normal text-muted">· {r.agent} missed this</span>}
         </span>
       }
       right={
@@ -210,9 +210,16 @@ function ReminderRow({ r }: { r: AgendaReminder }) {
           >
             <Check size={14} /> Done
           </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, due_at: snoozed(r.due_at) })} title="Push back a day">
-            +1d
-          </Button>
+          {r.for_agent ? (
+            // A missed agent follow-up: taking it over makes it the owner's (a snooze would hand it back to the agent).
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, for_agent: false })} title="Make it your reminder">
+              Take over
+            </Button>
+          ) : (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => act.reminder.mutate({ id: r.opportunity_id, reminderId: r.id, due_at: snoozed(r.due_at) })} title="Push back a day">
+              +1d
+            </Button>
+          )}
         </>
       }
     />

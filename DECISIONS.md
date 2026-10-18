@@ -349,3 +349,12 @@ only in agent state, Today showed the deal as "gone quiet".
 - Also locked: update (an agent logging on a deal while another updates it left stage and whose-move out of step)
   and update_reminder. Guide: give a spend back only in the same counter window (a give-back after UTC midnight
   lands in the new day and would let its cap be passed).
+- Re-review: a follow-up now records **which agent** it belongs to (`reminders.agent`, migration `8f1c3b7d2a64`
+  replaces the flag; the API still says `for_agent`, plus `agent`). get_agenda's `agent_due` lists only the
+  caller's own, and only until it's missed: then it's on the owner's Today and off the agent's list, so a client
+  never gets the same follow-up from both. A deal's `next_reminder` is the owner's next step when there is one.
+- The owner's "+1d" on a missed agent follow-up would hand it back to the agent; Today and the deal panel show
+  **Take over** instead (it becomes the owner's reminder). Board, list and rows show agent follow-ups with a bot
+  icon, muted, not as overdue owner tasks; the timeline shows "Agent follow-up", "took on" and "Handed to you".
+- An agent's bookkeeping on its own follow-up (set, done, reschedule) doesn't flag the deal for Review; handing
+  it over does. Only agents can set for_agent=true (a person's reminder is theirs).

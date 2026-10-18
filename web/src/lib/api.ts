@@ -19,7 +19,8 @@ export type Meta = {
   base_url: string;
 };
 
-export type ReminderRef = { id: number; due_at: string; note: string; for_agent: boolean };
+/** A deal's next step: the owner's own when there is one, otherwise an agent's follow-up (`agent` names it). */
+export type ReminderRef = { id: number; due_at: string; note: string; for_agent: boolean; agent: string | null };
 
 export type Summary = {
   id: number;
@@ -54,8 +55,9 @@ export type Reminder = {
   due_at: string;
   note: string;
   done_at: string | null;
-  /** An agent's own follow-up: on Today only once it's over a day late. */
+  /** An agent's own follow-up (`agent` names it): on Today only once it's over a day late. */
   for_agent: boolean;
+  agent: string | null;
   created_by: string;
 };
 

@@ -527,21 +527,29 @@ function Reminders({ opp }: { opp: Detail }) {
             >
               <span className="block h-4.5 w-4.5 rounded-full border-2 border-line group-hover/done:border-emerald-500 group-hover/done:bg-emerald-500/15" />
             </button>
-            {r.for_agent ? <Bot size={14} className={DUE_TONE[d.tone]} /> : <Bell size={14} className={DUE_TONE[d.tone]} />}
-            <span className="flex-1 truncate text-[13px]">{r.note || "Reminder"}</span>
-            {r.for_agent && (
-              <span className="text-xs text-muted" title="An agent's own follow-up: it shows on Today only if it's over a day late">
-                {r.created_by}
-              </span>
+            {r.for_agent ? <Bot size={14} className="shrink-0 text-muted" /> : <Bell size={14} className={cx("shrink-0", DUE_TONE[d.tone])} />}
+            <span className="min-w-0 flex-1 truncate text-[13px]" title={r.for_agent ? `${r.agent}'s follow-up: ${r.note}` : r.note}>
+              {r.note || "Reminder"}
+            </span>
+            {r.for_agent && <span className="hidden shrink-0 text-xs text-muted sm:inline">{r.agent}</span>}
+            <span className={cx("shrink-0 text-xs", r.for_agent ? "text-muted" : DUE_TONE[d.tone])}>{d.text}</span>
+            {r.for_agent ? (
+              <button
+                onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, for_agent: false })}
+                className="shrink-0 rounded px-1.5 py-1 text-xs text-muted hover:bg-panel-2 hover:text-fg"
+                title="An agent's own follow-up (on Today only if it's over a day late). Make it your reminder"
+              >
+                Take over
+              </button>
+            ) : (
+              <button
+                onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, due_at: snoozed(r.due_at) })}
+                className="shrink-0 rounded px-1.5 py-1 text-xs text-muted hover:bg-panel-2 hover:text-fg"
+                title="Push back a day"
+              >
+                +1d
+              </button>
             )}
-            <span className={cx("text-xs", DUE_TONE[d.tone])}>{d.text}</span>
-            <button
-              onClick={() => act.reminder.mutate({ id: opp.id, reminderId: r.id, due_at: snoozed(r.due_at) })}
-              className="rounded px-1.5 py-1 text-xs text-muted hover:bg-panel-2 hover:text-fg"
-              title="Push back a day"
-            >
-              +1d
-            </button>
             <button
               onClick={() => act.deleteReminder.mutate({ id: opp.id, reminderId: r.id })}
               className="rounded p-1 text-muted hover:bg-panel-2 hover:text-rose-500"
@@ -610,6 +618,15 @@ export function eventTitle(e: TimelineEvent, labels: (field: string, v: unknown)
       const dueAt = e.changes?.due_at?.[1];
       if (e.changes?.deleted) return <>Removed reminder: {e.body ?? "reminder"}</>;
       if (e.changes?.done_at) return e.changes.done_at[1] ? <>Done: {e.body ?? "reminder"}</> : <>Reopened: {e.body ?? "reminder"}</>;
+      const agent = e.changes?.agent; // [before, after]: whose follow-up it is (null = the owner's)
+      if (agent && e.changes?.due_at?.[0] == null && e.changes?.due_at)
+        return (
+          <>
+            Agent follow-up{e.body ? `: ${e.body}` : ""}
+            {typeof dueAt === "string" && <span className="text-muted"> · {due(dueAt).text}</span>}
+          </>
+        );
+      if (agent) return agent[1] ? <>{String(agent[1])} took on: {e.body ?? "reminder"}</> : <>Handed to you: {e.body ?? "reminder"}</>;
       if (e.changes?.due_at?.[0] != null)
         return (
           <>

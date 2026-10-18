@@ -41,10 +41,12 @@ Deals:
   conversation. Use update_opportunity for facts and for moves no message implies (proposal sent, won,
   lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no.
 - Keep one next step on every deal in progress (past lead); a deal without one gets forgotten.
-  set_reminder adds one, update_reminder moves, rewords or finishes it (its id is next_reminder.id in
-  the deal's summary). A step the owner takes shows on their Today list. A follow-up you'll do yourself
-  is set_reminder(for_agent=true): it counts as the deal's next step, comes back to you in get_agenda's
-  agent_due, and reaches the owner only if it's over a day late. Mark it done when you've done it.
+  set_reminder adds one, update_reminder moves, rewords or finishes it. A step for the owner shows on
+  their Today list (a deal's next_reminder is the owner's next step when there is one). A follow-up you'll
+  do yourself, one your instructions let you do (re-check a posting, see whether they replied), is
+  set_reminder(for_agent=true): it counts as the deal's next step and comes back to you in get_agenda's
+  agent_due when due; mark it done when you've done it. Over a day late it leaves your list and goes to
+  the owner's Today: it's theirs then.
 - The job post goes in `description`, your assessment in `notes`, running commentary in a note
   activity. `fit` 1-5 is your judgment of the match (5 = ideal for an AI / full-stack software shop).
 - Job applications: the tailored resume and cover letter live in the owner's Google Drive; store their
@@ -59,8 +61,8 @@ Messages:
   fits). Fill {placeholders} with facts you checked; if you can't, write around it rather than guess.
 - First-contact categories are for deals still at lead. A category with no current message means the
   owner hasn't decided what to send: ask them rather than write your own.
-- What is unique to a deal (proposals, cover letters) is written fresh. Replies and follow-ups are the
-  owner's unless a category's purpose says otherwise.
+- What is unique to a deal (proposals, cover letters) is written fresh. Replies and follow-up messages
+  to a client are the owner's unless a category's purpose says otherwise.
 - After sending, log_activity kind=my_message with the template_id it was based on and what you
   actually sent, so the owner sees it and Insights counts it per platform.
 - Create or edit categories and messages when the owner asks; they review what you write.
@@ -178,7 +180,7 @@ def add_opportunity(
     resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
     resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
     cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
-    reminder_at: Annotated[str | None, Field(description="First next step (not on a lost deal): YYYY-MM-DD or ISO datetime")] = None,
+    reminder_at: Annotated[str | None, Field(description="A first next step for the owner (not on a lost deal): YYYY-MM-DD or ISO datetime. Your own follow-up: set_reminder(for_agent=true) after")] = None,
     reminder_note: Annotated[str | None, Field(description="What that next step is")] = None,
 ) -> Result:
     """Add a job or project; returns created and the deal's summary. If application_url is a posting
@@ -311,11 +313,11 @@ def set_reminder(
     opportunity_id: int,
     due: Annotated[str, Field(description="YYYY-MM-DD (09:00 owner's time) or ISO datetime")],
     note: Annotated[str, Field(description="The next step, e.g. 'Follow up if no reply' (max 500 characters)")] = "",
-    for_agent: Annotated[bool, Field(description="true = a follow-up you'll do yourself: it reaches the owner's Today only if it's over a day late")] = False,
+    for_agent: Annotated[bool, Field(description="true = a follow-up you'll do yourself; over a day late it goes to the owner's Today")] = False,
 ) -> Result:
-    """Add a next step to an opportunity; returns the reminder (with its id). The owner's own steps show on
-    their Today list when due; for_agent ones come back to you in get_agenda's agent_due. Each call adds
-    one: to move, reword or finish the existing next step, use update_reminder."""
+    """Add a next step to an opportunity; returns the reminder (with its id). The owner's steps show on their
+    Today list when due; your for_agent ones come back to you in get_agenda's agent_due. Each call adds
+    one: to move, reword or finish an existing one, use update_reminder."""
     return _run(lambda s: service.reminder_dict(service.add_reminder(s, _actor(), opportunity_id, due, note, for_agent)))
 
 
@@ -353,11 +355,11 @@ def notify_owner(
 
 @mcp.tool(annotations=READ)
 def get_agenda() -> Result:
-    """Today's priorities: the owner's due reminders (plus agent follow-ups over a day late), deals where
+    """Today's priorities: the owner's due reminders (plus agents' follow-ups over a day late), deals where
     the owner owes a reply, open deals that went quiet without a next step, best new leads, the coming
-    week's reminders, agent_due (agent follow-ups due now: pick up yours), unread alerts, today's date
-    and the timezone."""
-    return _run(service.agenda)
+    week's reminders, agent_due (your own follow-ups due now), unread alerts, today's date and the
+    timezone."""
+    return _run(lambda s: service.agenda(s, _actor()))
 
 
 @mcp.tool(annotations=READ)

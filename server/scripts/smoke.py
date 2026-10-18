@@ -112,9 +112,12 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         late = structured(await c.call_tool("set_reminder", {"opportunity_id": opp["id"], "due": "2026-01-01", "note": "Smoke late", "for_agent": True}))
         ag = structured(await c.call_tool("get_agenda", {}))
         due_ids = {r["id"] for r in ag["due_reminders"]}
-        ok(mine["for_agent"] and {mine["id"], late["id"]} <= {r["id"] for r in ag["agent_due"]}
-           and mine["id"] not in due_ids and late["id"] in due_ids,
-           f"[{mode}] agent follow-ups: in agent_due, on the owner's Today only once missed")
+        agent_ids = {r["id"] for r in ag["agent_due"]}
+        ok(mine["for_agent"] and mine["agent"] == "Smoke key" and mine["id"] in agent_ids and mine["id"] not in due_ids
+           and late["id"] in due_ids and late["id"] not in agent_ids,
+           f"[{mode}] agent follow-ups: in its agent_due; once missed, only on the owner's Today")
+        back = structured(await c.call_tool("update_reminder", {"reminder_id": late["id"], "for_agent": False}))
+        ok(not back["for_agent"] and back["agent"] is None, f"[{mode}] an agent hands its follow-up to the owner")
         for r in (mine, late):
             structured(await c.call_tool("update_reminder", {"reminder_id": r["id"], "done": True}))
         ag = structured(await c.call_tool("get_agenda", {}))

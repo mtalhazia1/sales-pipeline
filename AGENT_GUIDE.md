@@ -27,6 +27,7 @@ their rules (lessons, owner rows) with `state_get` when you need them.
 2. **Work.**
    - Check each batch of items with `seen(mark=false)` and look only at the `new` ones. Mark them (`seen`
      again, default `mark=true`) once you've actually evaluated them, so a run cut short doesn't skip the rest.
+   - If you keep follow-ups on deals, `get_agenda`'s `agent_due` lists yours that are due now.
    - Before each action with a budget (a connection request, an application, an email), `count` it. If it says
      no, don't act: it's either the budget or a stop, and both are deliberate. A stop in any namespace in the
      call refuses its spending, so put the shared namespace's budget in the same call: a stop raised there
@@ -56,11 +57,12 @@ Any other section name is a **list** you define yourself (`targets`, `contacts`,
 per key. Read lists with `state_get`. Give a list row a `due` time to schedule it: `run_start` hands you the due
 rows of the lists you name in `include`. This is where your own to-dos go.
 
-**Follow-ups on a deal** that you'll do yourself are reminders with `for_agent: true` (`set_reminder`). They count
-as the deal's next step, so it doesn't show as gone quiet; they come back to you in `get_agenda`'s `agent_due` once
-due; and they reach the owner's Today list only if you're over a day late. Mark one done (`update_reminder`) when
-you've done it, or hand it to the owner with `for_agent: false`. A reminder without the tag is a step for the
-owner.
+**Follow-ups on a deal** that you'll do yourself (ones your instructions let you do) are reminders with
+`for_agent: true` (`set_reminder`). They count as the deal's next step, so it doesn't show as gone quiet, and they
+come back to you in `get_agenda`'s `agent_due` once due: only yours, by your API key's name. Mark one done
+(`update_reminder`) when you've done it, or hand it to the owner with `for_agent: false`. Over a day late it leaves
+your list and goes to the owner's Today: it's theirs then, so don't act on it. A reminder without the tag is a
+step for the owner; a deal's `next_reminder` is the owner's next step when there is one.
 
 **Owner rows** are the ones the owner locked (`locked: true` on the row; in fixed sections the brief also lists
 them under `owner`): instructions, follow them. In fixed sections you can't change them. In lists you can add or

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { ArrowDown, ArrowUp, Bell, Columns3, Inbox, List, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Columns3, Inbox, List, Search } from "lucide-react";
 import type { Summary } from "../lib/api";
 import { ago, due, money } from "../lib/format";
 import { STAGE_STYLE, labelOf, useMeta } from "../lib/meta";
 import { useDrawer, useOppActions, useOpportunities } from "../lib/hooks";
 import { PageHeader } from "../components/Shell";
-import { DUE_TONE, OppRow } from "../components/OppRow";
+import { DUE_TONE, NextStep, OppRow } from "../components/OppRow";
 import { Button, Chip, Empty, Fit, Modal, PageError, PageLoading, Segmented, Select, StagePill, YourMove, cx, pressable, useToast } from "../components/ui";
 
 export function Pipeline() {
@@ -186,7 +186,7 @@ function Board({ opps, showClosed }: { opps: Summary[]; showClosed: boolean }) {
 
 function Card({ opp, onDrag, dragging, channelLabel }: { opp: Summary; onDrag: (id: number | null) => void; dragging: boolean; channelLabel: string }) {
   const drawer = useDrawer();
-  const rem = opp.next_reminder ? due(opp.next_reminder.due_at) : null;
+  const rem = opp.next_reminder;
   return (
     <div
       draggable
@@ -221,9 +221,7 @@ function Card({ opp, onDrag, dragging, channelLabel }: { opp: Summary; onDrag: (
       </div>
       <div className="mt-2 flex items-center text-xs">
         {rem ? (
-          <span className={cx("inline-flex items-center gap-1", DUE_TONE[rem.tone])}>
-            <Bell size={11} /> {rem.text}
-          </span>
+          <NextStep r={rem} />
         ) : (
           <span className="text-muted">{ago(opp.last_activity_at)}</span>
         )}
@@ -311,7 +309,8 @@ function ListView({ opps }: { opps: Summary[] }) {
                   </td>
                   <td className="px-3 py-2.5">
                     {rem ? (
-                      <span className={DUE_TONE[rem.tone]}>
+                      <span className={o.next_reminder!.for_agent ? "text-muted" : DUE_TONE[rem.tone]}>
+                        {o.next_reminder!.for_agent && <span className="text-xs">{o.next_reminder!.agent}: </span>}
                         {rem.text}
                         <span className="block max-w-48 truncate text-xs text-muted">{o.next_reminder!.note}</span>
                       </span>
