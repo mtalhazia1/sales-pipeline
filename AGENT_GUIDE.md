@@ -1,138 +1,111 @@
 # Run state for scheduled agents (Sales Pipeline MCP)
 
-Paste this into a scheduled agent's instructions. When you connect, the server's own instructions cover deals,
-messages and the owner; this guide covers remembering things between runs.
+Give this to each scheduled agent. The server's own instructions cover deals, messages and the owner; this
+guide covers remembering between runs.
 
-## Why this exists
-You run on a schedule and start each run with no memory of the last one. The pipeline remembers for you:
-what you've already looked at, where you left off, what you learned, what you're waiting for, and how much of
-each daily budget is spent. Keep all of that here, never in local files or your own memory. That way any run
-(or another agent, or the owner on the State page) can pick up where the last one stopped.
+## Why
+Each run starts with no memory of the last. Keep here what the next run needs (where you left off, what you
+looked at, what you learned, what you wait for, how much of each budget is spent), never in local files or your
+own memory, so any run, another agent or the owner (State page) can pick up. Keep what the next run would do
+worse without; keep rows short and drop them once untrue.
 
-Use your judgment about what is worth remembering. A good test: would the next run behave worse without it?
-Keep rows short and specific, and drop them when they stop being true.
-
-## Who you are
-Your instructions from the owner name your namespace (`ns`, usually your agent name, e.g. `upwork`) and the
-shared namespaces you follow (e.g. `outreach-shared` for a LinkedIn budget several agents spend). `state_get`
-with `ns: "*"` shows every namespace that exists. Each agent should have its own API key: the key's name is how
-the owner sees who wrote what. `run_start` brings only the stops and counters of the namespaces in `also`: read
-their rules (lessons, owner rows) with `state_get` when you need them.
+## Names
+Your instructions name your namespace (`ns`, usually your agent name) and the shared ones you obey (`also`, e.g.
+a LinkedIn budget several agents spend); `state_get` with `ns: "*"` lists all. Give each agent its own API key: its
+name is how the owner sees who wrote what. `run_start` brings only the stops and counters of `also` namespaces;
+read their other rows with `state_get` when needed.
 
 ## A run
-1. **`run_start` first.** It returns your brief: where you left off, stops (yours and the shared namespaces in
-   `also`), current counters, your last run's summary, and the due rows of the lists you name in `include`. Read
-   it before deciding what to do. If it says `busy`, another run of this worker is still going: stop, without
-   `run_end` (there's no run to end).
-2. **Work.**
-   - Check each batch of items with `seen(mark=false)` and look only at the `new` ones. Mark them (`seen`
-     again, default `mark=true`) once you've actually evaluated them, so a run cut short doesn't skip the rest.
-   - Before each action with a budget (a connection request, an application, an email), `count` it. If it says
-     no, don't act: it's either the budget or a stop, and both are deliberate. A stop in any namespace in the
-     call refuses its spending, so put the shared namespace's budget in the same call: a stop raised there
-     mid-run then reaches you.
-3. **`run_end` last**, with an honest status and a one-line summary, plus the changes you want remembered.
-   Retrying it is safe. If you crash, the lease frees itself after `lease_min`, and the run is logged as an error.
-   Set `lease_min` above your longest run: once it lapses another run may start, and a late `run_end` still
-   records and applies.
+1. **`run_start` first**, and read the brief (where you left off, stops, counters, your last summary, due rows
+   of the lists in `include`) before deciding. `busy`: this worker is already running; stop, with no `run_end`.
+2. **Work.** `seen(mark=false)` on each batch, evaluate only the `new` ids, then mark the ones you evaluated, so
+   a run cut short skips nothing. `count` before each budgeted action (a request, an application, an email),
+   with any shared budget in the same call so a stop raised mid-run reaches you; a refusal (budget or stop) is
+   deliberate: don't act.
+3. **`run_end` last**: an honest status, a one-line summary, the changes to keep. Safe to retry. Set `lease_min`
+   above your longest run: a crashed run frees itself then and is logged as an error; after that another run may
+   start, and a late `run_end` still applies.
 
-## What to keep where
-Fixed sections come back in every brief, so keep them small:
+## What goes where
+Fixed sections return in every brief, so keep them small:
 
 | Section | For | Rows |
 |---|---|---|
-| `next` | where you left off: cursors, last-checked times, what to pick up next | 30 |
-| `stop` | a brake: while one exists, `count` refuses any spending that involves its namespace. Obey it | 5 |
-| `blocker` | you're stuck and need the owner: say exactly what they must do | 20 |
-| `waiting` | waiting on the owner or someone else | 20 |
-| `lesson` | something you learned that should change how you work next time | 15 |
-| `platform` | how a site behaves: limits, quirks, what breaks | 10 |
-| `proposal` | a change you suggest to the owner (to your rules, budgets, targets) | 10 |
+| `next` | Where you left off: cursors, last-checked times, what to pick up next | 30 |
+| `stop` | A brake: `count` refuses any spending in its namespace while it stands. Obey it | 5 |
+| `blocker` | You are stuck: exactly what the owner must do | 20 |
+| `waiting` | Waiting on the owner or someone else | 20 |
+| `lesson` | What should change how you work next time | 15 |
+| `platform` | How a site behaves: limits, quirks, what breaks | 10 |
+| `proposal` | A change you suggest to the owner (rules, budgets, targets) | 10 |
 
-A stop halts the whole namespace, so a narrow brake ("no connection requests, messages are fine") belongs in
-a namespace that only that activity counts against.
+A stop halts its whole namespace, so a narrow brake ("no invites, messages fine") gets a namespace only that
+activity counts against.
 
-Any other section name is a **list** you define yourself (`targets`, `contacts`, `drafts`, …), with one row
-per key. Read lists with `state_get`. Give a list row a `due` time to schedule it: `run_start` hands you the due
-rows of the lists you name in `include`. This is where your own to-dos go. Deal reminders (`set_reminder`) are
-the owner's Today list, for steps they should see or take.
+Any other section is a **list** you define (`targets`, `contacts`, `drafts`), one row per key, read with
+`state_get`. A row's `due` schedules it: `run_start` returns due rows of the lists in `include`. Your own to-dos go
+here; deal reminders (`set_reminder`) are the owner's Today list.
 
-**Owner rows** are the ones the owner locked (`locked: true` on the row; in fixed sections the brief also lists
-them under `owner`): instructions, follow them. In fixed sections you can't change them. In lists you can add or
-update fields and change `due`, but not remove fields or delete the row: when you've done what one asks, clear its
-`due` and merge the outcome into it (e.g. `{"done": true, "result": "…"}`). If its value isn't a JSON object (text,
-a number, a list), nothing can be merged: record the outcome in a row of your own. The owner removes it. If one looks wrong or out of date, say so with
-`notify_owner` or a `proposal` row instead of working around it.
+**Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions. Fixed ones are
+read-only. In lists you may add or update fields and change `due`, never remove fields or the row: when done,
+clear `due` and merge the outcome (`{"done": true, "result": "…"}`); a non-object value takes no merge, so record
+the outcome in your own row. The owner removes it. One that looks wrong: say so with `notify_owner` or a
+`proposal`, never work around it.
 
-**Hearing back from the owner.** When the owner actually needs to act, call `notify_owner`: that's what reaches
-them. Record it in `blocker` or `waiting` too. The owner answers by changing your state: editing your row (it
-then reads `by: owner` but stays yours: act on the answer, then delete or update the row), adding a `lesson`, a
-`stop` or a locked row, or changing the deal itself. Check your `waiting`, `blocker` and `proposal` rows each run;
-one the owner deleted is handled, and what they decided shows in their rows or your instructions.
+**The owner answers** by editing your row (it then shows `by: owner` but stays yours: act, then update or delete
+it), deleting it (handled), adding a lesson, stop or locked row, or changing the deal. What needs the owner also
+needs `notify_owner`, which is what reaches them; record it in `blocker` or `waiting` too, and read those and your
+`proposal` rows every run.
 
 ## Reference
-**Times you send** to these tools: ISO-8601 with an offset or `Z` (a time without one is read in the owner's
-timezone), `YYYY-MM-DD` (09:00 in the owner's timezone), `now`, or a duration (`30m`, `12h`, `7d`; from now, or
-back from now for `runs_since`). Times you get back are UTC (`…Z`).
-**Names** (ns, worker, section, counter key, seen source): lowercase letters, digits and `_ . -`, up to 60
-characters, case-insensitive. Row keys are exact text, up to 200 characters.
-Keys with nothing in them are left out of replies. Errors say what to fix.
+**Times you send:** ISO-8601 with an offset or `Z` (none: the owner's timezone), `YYYY-MM-DD` (09:00 the owner's
+time), `now`, or `30m` / `12h` / `7d` (from now; back from now for `runs_since`). Times returned are UTC.
+**Names** (ns, worker, section, counter key, seen source): lowercase letters, digits, `_ . -`, up to 60
+characters, any case. Row keys: exact text, up to 200. Empty keys are left out of replies; errors say what to fix.
 
-**`run_start(ns, worker="main", also=[], include=[], lease_min=50)`**
-→ `run_id`, `now`, `state` (your fixed sections), `owner` (which rows are the owner's), `lists` (row counts),
-`also` (stops in those namespaces), `counters`, `last` (this worker's last run), `include` (for each listed list,
-rows due now, earliest first, up to 50). Or `busy: true` when this worker is already running. `worker` separates
-jobs in one ns (e.g. `finder`, `sender`); different workers never block each other. `also` and `include` take up
-to 10 names each.
+**`run_start(ns, worker="main", also=[], include=[], lease_min=50)`** → `run_id`, `now`, `state` (fixed
+sections), `owner`, `lists` (row counts), `also` (their stops), `counters`, `last` (this worker's last run),
+`include` (per list, rows due now, earliest first, up to 50); or `busy: true`. Workers in one ns (`finder`,
+`sender`) never block each other. `also` and `include` take up to 10 names each.
 
-**`run_end(run_id, status, summary, counts, changes)`**
-`status`: `quiet` (nothing happened), `routine`, `attention` (the owner should look) or `error`. `summary`: one line.
-`counts`: up to 30 numbers, e.g. `{"applied": 3, "skipped": 12}`. `changes`: as in `state_set`.
-→ the applied and rejected changes. A repeat returns the first reply and applies nothing.
+**`run_end(run_id, status, summary, counts, changes)`**: `status` `quiet` (nothing happened), `routine`,
+`attention` (the owner should look) or `error`; `summary` one line; `counts` up to 30 numbers; `changes` as in
+`state_set`. → applied and rejected changes; a repeat returns the first reply and applies nothing.
 
-**`state_set(ns, changes)`**, with up to 100 changes. Each change is
-`{section, key, value, op, due, expires, ns}`:
-- `value`: text, number or JSON. Up to 500 characters in fixed sections, 16,000 in lists; longer values are
-  rejected, never trimmed. `null` deletes the row. Leave it out to change only `due` or `expires`.
-- `op`: `set` (default; replace), `merge` (update fields of a JSON object; a `null` field drops it), `max` (keep the
-  larger, for cursors), or `delete`. For `max`, send numbers as JSON numbers: `"10"` against a stored `"9"` is
-  compared as text and loses. ISO times compare as times. A number against text is refused.
-- `due` (when to work a list row) and `expires`: a time; `null` clears it; leaving it out keeps it. Expired rows
-  disappear.
-- `ns`: write to another namespace, e.g. a shared list.
-→ applied and rejected changes. Each change is checked on its own: a bad one is rejected with its `index` in
-`changes` and a reason, and the rest still apply.
+**`state_set(ns, changes)`**, up to 100, each `{section, key, value, op, due, expires, ns}`:
+- `value`: text, number or JSON; up to 500 characters in fixed sections, 16,000 in lists, longer rejected, never
+  trimmed. `null` deletes the row; omit it to change only `due` or `expires`.
+- `op`: `set` (default), `merge` (fields of a JSON object; a `null` field drops it), `max` (keep the larger, for
+  cursors: numbers only as JSON numbers, since `"10"` against `"9"` compares as text; ISO times compare as times;
+  a number against text is refused), `delete`.
+- `due`, `expires`: a time; `null` clears, omitted keeps. Expired rows disappear.
+- `ns`: another namespace, e.g. a shared list.
+→ applied and rejected changes; each is checked alone, a bad one rejected with its `index` and reason.
 
-**`state_get(ns, sections, keys, q, due_before, limit=100, runs_since)`**
-`ns`: a name, a list of names, or `"*"`. `q`: text to find in keys and values (any case). `due_before`: e.g. `now`.
-→ rows grouped ns → section → key, earliest due first (with `value`, `by`, `updated_at`, and `due_at`, `expires_at`,
-`locked` when set); `more: true` when `limit` (max 500) cut it short. `runs_since` (e.g. `24h`) adds a digest per
-ns and worker: run count, statuses, summed counts, and the latest 20 summaries of runs that weren't quiet. With
-`runs_since`, rows come back only if you also pass `sections`, `keys`, `q` or `due_before`.
+**`state_get(ns, sections, keys, q, due_before, limit=100, runs_since)`**: `ns` a name, a list or `"*"`; `q` text in
+keys and values, any case; `due_before` e.g. `now`. → rows by ns → section → key, earliest due first (`value`,
+`by`, `updated_at`, plus `due_at`, `expires_at`, `locked` when set); `more: true` when `limit` (max 500) cut it.
+`runs_since` (e.g. `24h`) adds per ns and worker: run count, statuses, summed counts, the latest 20 non-quiet
+summaries; rows then come only with `sections`, `keys`, `q` or `due_before`.
 
-**`count(items, idem)`**, with up to 20 items, each `{ns, key, period, by, limit}`:
-- `period`: `day`, `week` (ISO), `month` or `total`; windows are UTC (a day starts at 00:00 UTC, not the
-  owner's midnight) and a new one starts at 0.
-- `by`: units to spend (default 1); `0` reads; negative gives back (never below 0).
-- `limit`: refuse if this spend would pass it. You bring the limit; use one item per cap, e.g. the shared
-  daily budget and your own share.
-- `idem`: a key unique to you and this action (e.g. `upwork-finder:job-42`; other agents may count the same
-  budget). Retrying the same call within 24h replays the first success instead of spending twice; the same key
-  with different items (including a changed `limit`) is a new spend. A call that only reads is never replayed.
-- A stop beats a replay. If a stop refuses your retry, keep the action (and its idem) in a list row with `due`
-  and retry the same call once the stop clears: within 24h the replay confirms it counted once; after that it
-  spends again. Give it back (`by: -1`) only when you're dropping the action for good, you saw that spend
-  succeed (if you never got its reply, retry it once the stop clears, then give it back), and it's still the
-  same window: a give-back lands in the current day / week / month, so a unit from an earlier one is already
-  gone — giving it back would let today's budget be passed. Give the give-back its own idem (e.g.
-  `upwork-finder:job-42:back`) so a retried give-back returns one unit, and never retry the spend with its idem
-  after giving it back: its stored success would replay and let you act without spending.
-→ `ok`, and `counters` with each `value` and `allowed`. All or nothing: when `ok` is false nothing was counted;
-`refused` names the cap, or `stopped` quotes the stop rows: a call that spends is refused while any of its
-namespaces has a stop. A call that only reads or gives back still works then: its reply carries `stopped` too,
-and a read's `allowed` is false. Otherwise a read's `allowed` says whether there's room for one more.
+**`count(items, idem)`**, up to 20 items `{ns, key, period, by, limit}`, one per cap (e.g. the shared daily budget
+and your share):
+- `period`: `day`, `week` (ISO), `month`, `total`; UTC windows (a day starts 00:00 UTC), each new one at 0.
+- `by`: units to spend (default 1); `0` reads; negative gives back, never below 0. `limit`: yours to bring;
+  refuse if this spend would pass it.
+- `idem`: unique to you and the action (`upwork-finder:job-42`). A retry within 24h replays the first success
+  instead of spending twice; different items or a changed `limit` make a new spend; a read is never replayed.
+- A stop beats a replay: keep a refused action and its idem in a list row with `due`, and retry the same call
+  once the stop clears (within 24h the replay confirms one spend; later it spends again). Give back (`by: -1`)
+  only when dropping the action for good, after seeing its spend succeed (no reply seen: retry once the stop
+  clears, then give back), and within the same window, since a unit from an earlier window is gone and returning
+  it would let today's budget be passed. The give-back takes its own idem (`…:back`); never retry the spend's
+  idem after it, or its stored success replays and you act without spending.
+→ `ok` and `counters` (each `value`, `allowed`); all or nothing: `ok: false` counts nothing, with `refused` (the cap)
+or `stopped` (the stop rows: a spending call is refused while any of its namespaces has one). Reads and
+give-backs still work during a stop and carry `stopped`; a read's `allowed` is then false, otherwise it says
+whether one more fits.
 
-**`seen(ns, source, ids, mark=true, ttl_days=90)`**, with up to 500 ids. `source` says what the ids are
-(e.g. `upwork-jobs`).
-→ `new`: the ids not seen before in this ns and source (or whose `ttl_days` ran out), as you sent them; with
-`mark=true` they're now marked. `mark=false` only checks.
+**`seen(ns, source, ids, mark=true, ttl_days=90)`**, up to 500 ids; `source` says what they are (`upwork-jobs`).
+→ `new`: ids not seen in this ns and source (or past `ttl_days`), as sent, marked when `mark=true`;
+`mark=false` only checks.
