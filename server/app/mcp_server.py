@@ -70,7 +70,7 @@ The owner:
 - Everything you write about deals and templates goes to their review, so keep it factual and short.
 - You can't delete deals, timeline entries, messages or categories. A deal added by mistake: log a
   note starting "DELETE:". A wrong timeline entry: log a note correcting it, put back what you can
-  with update_opportunity (stage, inbound) and tell the owner what's left. A wrong template or category:
+  with update_opportunity (stage, inbound, waiting_on) and tell the owner what's left. A wrong template or category:
   notify_owner.
 - Dates: YYYY-MM-DD (09:00 in the owner's timezone) or an ISO-8601 time with an offset or Z (one
   without is read in the owner's timezone). Times come back in UTC; get_agenda gives today and the

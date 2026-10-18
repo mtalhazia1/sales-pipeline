@@ -274,6 +274,11 @@ r = call(service.state_set, AGENT, "edge", [{"section": "targets", "key": "acme"
 ok(r["rejected"][0]["reason"].startswith("owner_row") and len(r["applied"]) == 1
    and call(service.state_get, "edge", ["targets"])["state"]["edge"]["targets"]["acme"]["value"] == {"note": "owner", "tier": 2, "seen": True},
    "on an owner list row agents may add or update fields, not remove them")
+call(service.state_set, OWNER, "edge", [{"section": "todo", "key": "jane", "value": "Follow up with Jane", "due": "now"}])
+r = call(service.state_set, AGENT, "edge", [{"section": "todo", "key": "jane", "op": "merge", "value": {"done": True}},
+                                            {"section": "todo", "key": "jane", "due": None}])
+ok("own" in r["rejected"][0]["reason"] and len(r["applied"]) == 1,
+   "a text owner row: a merge is refused with what to do instead; clearing its due works")
 r = call(service.state_set, AGENT, "edge", [{"section": "targets", "key": "acme", "op": "merge", "due": "2030-01-01"}])
 row = call(service.state_get, "edge", ["targets"])["state"]["edge"]["targets"]["acme"]
 ok(r.get("applied") and row["due_at"].startswith("2030-01-01") and row["value"]["note"] == "owner",

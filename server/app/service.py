@@ -382,6 +382,9 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
     if opp.waiting_on is None:
         opp.waiting_on = _default_waiting(opp.stage)
     _stamp_milestones(opp, opp.stage, now)
+    # pysqlite opens a transaction only at the first write, so without this the SAVEPOINT below would be the
+    # outermost transaction and commit the deal on its own — a later failure (a bad reminder_at) would leave it.
+    _write_lock(s)
     try:
         with s.begin_nested():  # two agents adding the same posting at once: the loser gets the winner's row
             s.add(opp)
@@ -1157,6 +1160,9 @@ def _apply_change(s: Session, actor: Actor, default_ns: str, ch: Any, now: datet
     if not has_value:
         value = live.value
     elif op == "merge":
+        if live and live.locked and actor.is_agent and not isinstance(live.value, dict):
+            raise ServiceError("owner_row: its value isn't a JSON object, so nothing can be merged into it; change "
+                               "only its due, and record the outcome in a row of your own.")
         if not isinstance(value, dict) or (live and not isinstance(live.value, dict)):
             raise ServiceError("merge needs a JSON object, and the stored value must be one; use op=set.")
         value = {k: v for k, v in {**(live.value if live else {}), **value}.items() if v is not None}  # null drops a field

@@ -53,6 +53,9 @@ async def mcp_calls(token: str, mode: str) -> list[int]:
         ok(r["created"] and opp["channel"] == "upwork" and opp["needs_review"], f"[{mode}] add: channel inferred, review flagged")
         r2 = structured(await c.call_tool("add_opportunity", {"company": "dup", "application_url": url.split("?")[0].replace("Smoke-Test-AI-agent_", "")}))
         ok(not r2["created"] and r2["opportunity"]["id"] == opp["id"], f"[{mode}] same posting (different URL form) deduplicated")
+        bad = await c.call_tool("add_opportunity", {"company": f"Smoke Test bad date {mode}", "reminder_at": "next friday"})
+        found = structured(await c.call_tool("find_opportunities", {"query": f"Smoke Test bad date {mode}"}))
+        ok(bad.is_error and found["count"] == 0, f"[{mode}] a refused add (bad reminder_at) saves nothing")
         lib = structured(await c.call_tool("list_message_templates", {"category": TEMPLATE["cat"]}))["categories"]
         ok(len(lib) == 1 and lib[0]["purpose"] and {m["id"] for m in lib[0]["messages"]} == {TEMPLATE["id"], TEMPLATE["other"]},
            f"[{mode}] list_message_templates: category purpose + its messages")

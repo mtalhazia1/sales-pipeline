@@ -318,5 +318,18 @@ fresh agent working only from that text on a scratch server.
 - Docs: owner rows are the locked ones (an owner edit to an agent's row answers it, the row stays the agent's);
   finishing an owner list to-do = merge the outcome and clear `due`; next steps are for deals past lead;
   how to undo a wrong timeline entry; lease timing; UTC counter days; a stop beats an idem replay.
-- Left as is: run_start doesn't return the owner rows of `also` namespaces (the guide says to state_get them);
+- Left as is: run_start returns only the stops (and counters) of `also` namespaces, not their other owner rows
+  (the guide says to state_get them);
   `waiting_on` can be set but not cleared.
+
+### Fourth pass — 2026-10-19
+- **A refused add_opportunity no longer leaves the deal behind** (older than this work). pysqlite opens a
+  transaction only at the first write, so the duplicate-check SAVEPOINT was the outermost transaction and
+  committed the deal; a bad `reminder_at` then errored with the deal already saved (no "created" event; a retry
+  saw a duplicate, or made a second deal without a URL). create now takes the write lock first.
+- idem guidance: make keys unique per agent and action; keep a stopped action in a list row and retry the same
+  call when the stop clears (after 24h it spends again); give back only when dropping the action for good.
+- Merging into a locked owner row whose value isn't an object says what to do instead (change its due, record the
+  outcome in your own row).
+- Left as is: set_reminder works on a lost deal (a deliberate "check back in Q1"); only an add-as-lost with
+  reminder_at is refused, since that one is usually a reflex.
