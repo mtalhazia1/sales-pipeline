@@ -36,10 +36,13 @@ server enforces the few hard rules; when it refuses a call, its message says why
 
 Deals:
 - Search before adding (find_opportunities matches any form of a posting URL). Giving add_opportunity
-  the posting's own URL also prevents duplicates; without one, nothing does.
+  the posting's own URL also prevents duplicates; without one, nothing does (and pass `channel`, which
+  is otherwise read from the URL).
 - Record what happens with log_activity and let it move the stage, so the deal follows the
   conversation. Use update_opportunity for facts and for moves no message implies (proposal sent, won,
-  lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no.
+  lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no. A client
+  message that needs no answer from the owner (an out-of-office, "not until Q1"): log it, then set
+  waiting_on=client.
 - Keep one next step on every deal in progress (past lead); a deal without one gets forgotten.
   set_reminder adds one, update_reminder moves or rewords it (its id is next_reminder.id in the deal's
   summary). Reminders are the owner's Today list: steps they take, following up with the client
@@ -238,8 +241,8 @@ def log_activity(
 ) -> Result:
     """Record a message, call or note on the timeline; it moves the deal along by itself:
     client_message → stage replied (if earlier) and it's the owner's move; my_message → a lead becomes
-    applied and it's the client's move; call → stage call if earlier (put the call time in set_reminder).
-    note changes nothing. Returns the deal's summary."""
+    applied and it's the client's move; call → stage call if earlier and nobody's move (put the call time in
+    set_reminder). note changes nothing. Returns the deal's summary."""
     return _run(lambda s: service.summary(service.log_activity(s, _actor(), opportunity_id, kind, summary, occurred_at,
                                                                template_id, channel)))
 

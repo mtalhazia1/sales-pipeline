@@ -19,7 +19,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app import domain
 from app.db import iso, utcnow
@@ -131,6 +131,8 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
     taken as-is; a naive datetime is read in the workspace timezone. Returns naive UTC."""
     if value is None or value == "":
         return None
+    if not isinstance(value, str | datetime):
+        raise ServiceError(f"Couldn't read the date {value!r} — use YYYY-MM-DD or an ISO time.")
     if isinstance(value, datetime):
         dt = value
     else:
@@ -158,6 +160,8 @@ MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "summary":
 
 
 def _clean(field: str, value: Any) -> Any:
+    if isinstance(value, list | dict):
+        raise ServiceError(f"{field} must be a single value, not a list or object.")
     if isinstance(value, str):
         value = value.strip()
         if value == "" and field not in ("company",):
@@ -265,8 +269,13 @@ def _touch(opp: Opportunity, actor: Actor, activity: bool = True) -> None:
     opp.needs_review = actor.is_agent
 
 
+def _id(value: Any) -> int | None:
+    """A row id SQLite can hold; anything else is simply not found (not a crash)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value < 2**63 else None
+
+
 def _get(s: Session, opp_id: int) -> Opportunity:
-    opp = s.get(Opportunity, opp_id)
+    opp = s.get(Opportunity, i) if (i := _id(opp_id)) else None
     if not opp or opp.archived_at:
         raise ServiceError(f"Opportunity {opp_id} not found.", 404)
     return opp
@@ -451,14 +460,20 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
         if dup:
             raise ServiceError(f"That URL is already opportunity #{dup.id} ({dup.company}).", 409)
         opp.url_key = key
-    closed_reminders = 0
+    closed_reminders = reopened = 0
     if "stage" in changes:
         now = utcnow()
+        lost_at = opp.closed_at if changes["stage"][0] == "lost" else None
         if opp.stage in domain.OPEN_STAGES:
             _rewind_milestones(opp, opp.stage)
         _stamp_milestones(opp, opp.stage, now)
-        if "waiting_on" not in changes and (wo := _default_waiting(opp.stage)):
-            opp.waiting_on = wo
+        if "waiting_on" not in changes and ((wo := _default_waiting(opp.stage)) or opp.stage == "lead"):
+            opp.waiting_on = wo  # back to lead: nothing was sent, so nobody's move
+        if lost_at and opp.stage in domain.OPEN_STAGES:
+            # Reopening a lost deal (e.g. Undo on "Pass") brings back the reminders losing it closed.
+            for r in opp.reminders:
+                if r.done_at == lost_at:
+                    r.done_at, reopened = None, reopened + 1
         if opp.stage == "lost":
             # A dead deal's follow-ups would keep surfacing on Today; a won deal keeps its (kickoff, invoice…) reminders.
             for r in opp.reminders:
@@ -471,6 +486,8 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     logged |= {k: [before[k], getattr(opp, k)] for k in derived if k not in logged and getattr(opp, k) != before[k]}
     if closed_reminders:
         logged["reminders_closed"] = [None, closed_reminders]
+    if reopened:
+        logged["reminders_reopened"] = [None, reopened]
     _event(s, opp, actor, "updated", None, _loggable(logged, s))
     return opp
 
@@ -529,6 +546,8 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     elif kind == "call":
         if opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["call"]:
             opp.stage = "call"
+        if opp.stage in domain.OPEN_STAGES:
+            opp.waiting_on = None  # a call is booked or held: nobody owes a message until someone writes
     if opp.stage != before["stage"]:
         _stamp_milestones(opp, opp.stage, when)
     # Back-filled history: an earlier piece of evidence moves its milestone earlier.
@@ -560,7 +579,7 @@ def mark_reviewed(s: Session, actor: Actor, opp_id: int | None = None, ids: list
 def search(s: Session, *, q: str | None = None, stage: list[str] | None = None, channel: str | None = None,
            network: str | None = None, kind: str | None = None, waiting_on: str | None = None,
            needs_review: bool | None = None, include_closed: bool = True, limit: int = 500) -> list[Opportunity]:
-    stmt = select(Opportunity).where(Opportunity.archived_at.is_(None))
+    stmt = select(Opportunity).where(Opportunity.archived_at.is_(None)).options(selectinload(Opportunity.reminders))
     if q and q.strip():
         like = f"%{q.strip()}%"
         matches = [Opportunity.company.ilike(like), Opportunity.title.ilike(like),
@@ -602,7 +621,7 @@ def add_reminder(s: Session, actor: Actor, opp_id: int, due: str | datetime, not
 def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | None = None,
                     due: str | None = None, note: str | None = None) -> Reminder:
     _write_lock(s)
-    r = s.get(Reminder, reminder_id)
+    r = s.get(Reminder, i) if (i := _id(reminder_id)) else None
     if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
     changes: dict[str, list] = {}
@@ -761,6 +780,7 @@ def update_category(s: Session, actor: Actor, key: str, data: dict) -> MessageCa
 def delete_category(s: Session, key: str) -> None:
     """Only an empty category can go. One whose (deleted) messages have history is archived so Insights can
     still name them."""
+    _write_lock(s)  # an agent adding a message to it at the same moment must not be orphaned
     c = _category(s, key)
     rows = s.scalars(select(MessageTemplate).where(MessageTemplate.category == c.key)).all()
     if any(not t.archived_at for t in rows):
@@ -772,7 +792,7 @@ def delete_category(s: Session, key: str) -> None:
 
 
 def _template(s: Session, template_id: int) -> MessageTemplate:
-    t = s.get(MessageTemplate, template_id)
+    t = s.get(MessageTemplate, i) if (i := _id(template_id)) else None
     if not t:
         raise ServiceError(f"Message template {template_id} not found.", 404)
     return t
@@ -780,7 +800,7 @@ def _template(s: Session, template_id: int) -> MessageTemplate:
 
 def _assignable_template(s: Session, template_id: int, current_id: int | None) -> MessageTemplate:
     """A deal may point at a live variant, or keep the (possibly since-deleted) one it already has."""
-    t = s.get(MessageTemplate, template_id)
+    t = s.get(MessageTemplate, i) if (i := _id(template_id)) else None
     if not t or (t.archived_at and t.id != current_id):
         raise ServiceError(f"Message template {template_id} doesn't exist or was deleted by the owner. If you sent it, "
                            "log the message without template_id; call get_message_template before the next one.", 404)
@@ -929,6 +949,7 @@ def update_template(s: Session, actor: Actor, template_id: int, data: dict) -> M
 
 def delete_template(s: Session, template_id: int) -> None:
     """A variant nothing live used is removed; one that was sent is archived, so its stats survive."""
+    _write_lock(s)  # a send logged at the same moment keeps its credit (the message is archived instead)
     t = _template(s, template_id)
     live = Opportunity.archived_at.is_(None)
     if (s.scalar(select(func.count()).where(Opportunity.template_id == t.id, live))
@@ -1598,14 +1619,15 @@ def agenda(s: Session) -> dict:
     due = s.execute(
         select(Reminder, Opportunity).join(Opportunity)
         .where(Reminder.done_at.is_(None), Reminder.due_at < end_of_today, active)
-        .order_by(Reminder.due_at)
+        .order_by(Reminder.due_at).options(selectinload(Opportunity.reminders))
     ).all()
     upcoming = s.execute(
         select(Reminder, Opportunity).join(Opportunity)
         .where(Reminder.done_at.is_(None), Reminder.due_at >= end_of_today, Reminder.due_at < week_end, active)
-        .order_by(Reminder.due_at)
+        .order_by(Reminder.due_at).options(selectinload(Opportunity.reminders))
     ).all()
-    open_opps = s.scalars(select(Opportunity).where(active, Opportunity.stage.in_(domain.OPEN_STAGES))).unique().all()
+    open_opps = s.scalars(select(Opportunity).where(active, Opportunity.stage.in_(domain.OPEN_STAGES))
+                          .options(selectinload(Opportunity.reminders))).unique().all()
 
     your_move = sorted((o for o in open_opps if o.waiting_on == "me"), key=lambda o: o.last_activity_at)
     quiet = []
@@ -1641,6 +1663,8 @@ def agenda(s: Session) -> dict:
 def stats(s: Session, days: int | None = 90) -> dict:
     """Funnel per channel/network for outbound work applied to in the window, plus the open
     pipeline and a 12-week activity series."""
+    if days is not None and not (isinstance(days, int) and 0 < days <= 36_500):
+        raise ServiceError("days is 1-36500, or null for all time.")
     now = utcnow()
     since = now - timedelta(days=days) if days else datetime.min
     all_opps = s.scalars(select(Opportunity).where(Opportunity.archived_at.is_(None))).unique().all()

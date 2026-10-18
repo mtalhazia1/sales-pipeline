@@ -70,9 +70,9 @@ function Memory({ ns, setNs }: { ns: string; setNs: (v: string) => void }) {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Select className="w-auto" value={ns} onChange={setNs} placeholder="All namespaces" options={data.namespaces.map((n) => ({ value: n, label: n }))} />
+        <Select className="w-auto max-w-full" value={ns} onChange={setNs} placeholder="All namespaces" options={data.namespaces.map((n) => ({ value: n, label: n }))} />
         <Select
-          className="w-auto"
+          className="w-auto max-w-full"
           value={section}
           onChange={setSection}
           placeholder="All sections"

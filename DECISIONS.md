@@ -279,7 +279,8 @@ Independent audit of the 2026-10-15 categories work and the examples change (ser
 - **Template ids are never reused** (AUTOINCREMENT, added by the same unreleased migration's table rebuild).
   Agents keep ids; before, deleting an unused message and adding another handed the new one the old id.
 - A template sent before the client's reply but logged after it now counts as the first message.
-- Category names compare accent- and case-insensitively; keys drop accents ("École" → `ecole`), never end in `_`.
+- Category names compare case-insensitively in any script ("ÉCOLE" = "école", but "Ecole" is a different name);
+  keys drop accents ("École" → `ecole`, then `ecole_2`), never end in `_`.
   Category creates take the write lock, so two agents adding one name get one category and a refusal.
 - UI: Insights no longer scrolls sideways on a phone (long labels wrap and show "(deleted)"; the table
   scrolls inside its card); long links wrap in message cards; renames refresh open timelines; buttons
@@ -366,3 +367,25 @@ for first contact only for now. Reminders are the owner's only again: `for_agent
 the agent follow-up labels are gone (migration `a3e9f2c7b815` drops the column; the two earlier ones stay, as
 production applied them). Kept from that work: `update` and `update_reminder` take the write lock, and the
 guide's "give back only within the same counter window".
+
+## Whole-release review — 2026-10-19
+
+Three audits of everything shipped since 2026-10-15 together (server across features, a simulated agent day,
+every owner page at desktop and phone width).
+- **Deleting a category or a message takes the write lock**: an agent adding a message to a category being
+  deleted no longer leaves an orphan (stuck Messages badge), and a send logged while its message is deleted keeps
+  its credit (the message is archived instead).
+- **A logged call (booked or held) makes it nobody's move**: a booked call no longer sits in Your move. Moving a
+  deal back to lead also clears whose move it is, and reopening a lost deal (Undo on "Pass") brings back the
+  reminders that losing it closed.
+- **Speed**: the agenda and deal lists load reminders in one query (the agenda went from ~2,100 queries at 5,000
+  deals to a dozen).
+- Bad input gives a clear error instead of a 500 / hidden MCP error: ids beyond SQLite's range, a stats window over
+  100 years, a non-text date, a list in a text field.
+- UI: the board filtered to Won or Lost shows those columns; Settings and the State filters no longer scroll
+  sideways on a phone; Settings says where agent writes land; alerts refresh when a deal changes.
+- Agent text: a client message that needs no answer → waiting_on=client; pass `channel` without a posting URL;
+  limits come from the owner's instructions; re-read the deal before acting on a queued row.
+- Left as is (owner's flows, or broad and older): Today's one-click "I replied" adds no follow-up (follow-ups are
+  the owner's); Approve all carries no version; accessibility labels across older pages; lone UTF-16 surrogates;
+  JSON integers beyond 2^63 in state values come back as floats.

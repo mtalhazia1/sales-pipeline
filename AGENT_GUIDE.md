@@ -44,7 +44,8 @@ activity counts against.
 
 Any other section is a **list** you define (`targets`, `contacts`, `drafts`), one row per key, read with
 `state_get`. A row's `due` schedules it: `run_start` returns due rows of the lists in `include`. Your own to-dos go
-here; deal reminders (`set_reminder`) are the owner's Today list.
+here; deal reminders (`set_reminder`) are the owner's Today list. Re-read the deal before acting on a queued row:
+the owner or another agent may have handled it.
 
 **Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions. Fixed ones are
 read-only. In lists you may add or update fields and change `due`, never remove fields or the row: when done,
@@ -91,8 +92,8 @@ summaries; rows then come only with `sections`, `keys`, `q` or `due_before`.
 **`count(items, idem)`**, up to 20 items `{ns, key, period, by, limit}`, one per cap (e.g. the shared daily budget
 and your share):
 - `period`: `day`, `week` (ISO), `month`, `total`; UTC windows (a day starts 00:00 UTC), each new one at 0.
-- `by`: units to spend (default 1); `0` reads; negative gives back, never below 0. `limit`: yours to bring;
-  refuse if this spend would pass it.
+- `by`: units to spend (default 1); `0` reads; negative gives back, never below 0. `limit`: yours to bring (the
+  owner's instructions give it); refuse if this spend would pass it.
 - `idem`: unique to you and the action (`upwork-finder:job-42`). A retry within 24h replays the first success
   instead of spending twice; different items or a changed `limit` make a new spend; a read is never replayed.
 - A stop beats a replay: keep a refused action and its idem in a list row with `due`, and retry the same call

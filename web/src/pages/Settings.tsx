@@ -41,7 +41,7 @@ function CopyLine({ text, label }: { text: string; label?: string }) {
   const copy = useCopy();
   return (
     <div className="flex items-center gap-2 rounded-lg border border-line bg-panel-2 py-1 pr-1 pl-3">
-      <code className="flex-1 overflow-x-auto font-mono text-[12.5px] whitespace-nowrap scroll-thin">{text}</code>
+      <code className="min-w-0 flex-1 overflow-x-auto font-mono text-[12.5px] whitespace-nowrap scroll-thin">{text}</code>
       <Button size="sm" variant="ghost" onClick={() => copy(text, label ?? "Copied")} title="Copy">
         <Copy size={14} />
       </Button>
@@ -76,7 +76,7 @@ function ConnectAgents() {
   const url = data?.mcp_url ?? "";
 
   return (
-    <Card icon={<Plug size={18} />} title="Connect agents" sub="Agents add and update opportunities through MCP. Everything they change lands in Review.">
+    <Card icon={<Plug size={18} />} title="Connect agents" sub="Agents add and update opportunities through MCP. What they change on deals lands in Review; message templates they write wait on the Messages page.">
       <div className="space-y-5">
         <div>
           <div className="label">MCP server URL</div>
@@ -84,7 +84,7 @@ function ConnectAgents() {
         </div>
 
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-xl border border-line p-4">
+          <div className="min-w-0 rounded-xl border border-line p-4">
             <div className="mb-1 font-medium">Claude (web, desktop, Cowork)</div>
             <ol className="list-decimal space-y-1 pl-4 text-[13px] text-muted">
               <li>Settings → Connectors → Add custom connector</li>
@@ -92,7 +92,7 @@ function ConnectAgents() {
               <li>Approve on the screen that opens here</li>
             </ol>
           </div>
-          <div className="rounded-xl border border-line p-4">
+          <div className="min-w-0 rounded-xl border border-line p-4">
             <div className="mb-1 font-medium">Claude Code</div>
             <p className="mb-2 text-[13px] text-muted">Run once, then <code>/mcp</code> to sign in:</p>
             <CopyLine text={`claude mcp add --transport http --scope user sales ${url}`} />
@@ -106,13 +106,13 @@ function ConnectAgents() {
               <div className="text-[13px] text-muted">For headless agents, scripts and automations — sent as <code>Authorization: Bearer …</code>.</div>
             </div>
             <form
-              className="flex gap-2"
+              className="flex w-full gap-2 sm:w-auto"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (name.trim()) create.mutate();
               }}
             >
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Agent name, e.g. Upwork scout" className="field h-9 w-56" />
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Agent name, e.g. Upwork scout" className="field h-9 min-w-0 flex-1 sm:w-56 sm:flex-none" />
               <Button type="submit" variant="primary" disabled={!name.trim() || create.isPending}>
                 <KeyRound size={14} /> Create
               </Button>

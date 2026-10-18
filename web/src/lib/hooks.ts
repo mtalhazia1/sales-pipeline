@@ -49,6 +49,7 @@ export function useOppActions() {
     qc.invalidateQueries({ queryKey: ["activity"] });
     qc.invalidateQueries({ queryKey: ["stats"] });
     qc.invalidateQueries({ queryKey: ["templates"] }); // per-variant reply counts
+    qc.invalidateQueries({ queryKey: ["notifications"] }); // alerts name their deal
     if (id != null) qc.invalidateQueries({ queryKey: ["opp", id] });
   };
   const m = <A, R>(fn: (a: A) => Promise<R>, done?: string | ((a: A) => string | undefined)) =>

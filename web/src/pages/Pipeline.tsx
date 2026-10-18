@@ -90,7 +90,7 @@ export function Pipeline() {
       ) : isLoading || !opps ? (
         <PageLoading />
       ) : view === "board" ? (
-        <Board opps={opps} showClosed={showClosed} />
+        <Board opps={opps} showClosed={showClosed || filters.stage === "won" || filters.stage === "lost"} />
       ) : opps.length ? (
         <ListView opps={opps} />
       ) : (
