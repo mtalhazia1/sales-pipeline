@@ -1,6 +1,6 @@
 """MCP server — the agent interface. Every tool is a thin call into app.service, so agents and the
 web UI share one set of rules. Agents are identified by their token's name in the audit trail and
-everything they write lands in the human Review queue."""
+everything they write about deals and templates lands in the human Review queue (agent state doesn't)."""
 
 from typing import Annotated, Any
 
@@ -9,59 +9,72 @@ from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, Re
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from app import config, service
 from app.db import session_scope
-from app.domain import ActivityKind, Channel, Kind, LostReason, Network, Stage, TemplateCategory, WaitingOn
+from app.domain import ActivityKind, Channel, CounterPeriod, Kind, LostReason, Network, RunStatus, Stage, WaitingOn
 from app.oauth import SCOPE, Provider
 from app.service import Actor, ServiceError
 
 INSTRUCTIONS = """\
-Sales pipeline for a one-person B2B software / AI services business. Each record is an
-*opportunity*: a job or project at a client company, found on a channel (LinkedIn, Email, Upwork,
-Toptal, Direct/Website, Referral), optionally reached through a network (LinkedIn, FirstGlance,
-Referral).
+Sales pipeline for a one-person B2B software / AI services business. The owner uses it to see every
+opportunity they're pursuing and decide where to spend their time, so what you record should match
+what really happened. Each record is an *opportunity*: a job or project at a client company, found on
+a channel (LinkedIn, Email, Upwork, Toptal, Direct/Website, Referral), optionally reached through a
+network (LinkedIn, FirstGlance, Referral).
 
-Stages, in order: lead (found, not applied yet) → matcher (Toptal only: sent to a matcher) →
+Stages, in order: lead (found, nothing sent yet) → matcher (Toptal only: sent to a matcher) →
 applied → replied (client responded) → call (call booked) → proposal (proposal sent) →
 won (contract done) | lost (with lost_reason).
 
-How to work:
-- Before adding, call find_opportunities (it matches any form of a posting URL). add_opportunity with
-  the posting's own application_url never stores the same posting twice (it returns the existing one
-  with created=false). Without a posting URL there is no duplicate check.
-- Record conversation with log_activity, not by editing the stage: a client_message moves the
-  deal to "replied" and marks it "your move"; a my_message moves a lead to "applied" and marks it
-  "their move"; a call (booked or held) moves it to "call" — log the booking when it happens and
-  put the call time in set_reminder. Use update_opportunity for facts (stage jumps like
-  proposal/won/lost, budget, value, contact) and set_reminder for every next step — an open deal
-  should always have one.
-- Only mark won/lost with clear evidence (a signed contract, an explicit rejection); lost always
-  needs a lost_reason (no_response = ghosted; a later client_message revives only those).
-- Put the job post text in `description`, your reasoning in `notes`; for running commentary use
-  log_activity kind=note. Set `fit` 1-5 when you judge how well a lead matches (5 = perfect fit for
-  an AI / full-stack software shop). Pass "" to clear a text field.
-- Job applications: store the tailored resume and cover letter in the owner's Google Drive and pass
-  their links as resume_url / cover_letter_url (plus resume_version = the base resume you tailored
-  from, same label every time). add_opportunity ignores them when it returns created=false — then
-  use update_opportunity.
-- First contact on LinkedIn, by cold email or by warm email: only when the deal's template_id is
-  still empty (find_opportunities shows it). Warm = they know the owner, or network is referral /
-  firstglance; anyone else (including LinkedIn connections) is cold. Call get_message_template for
-  the category and send its subject and body word for word, filling only its `placeholders` (e.g.
-  {first_name}, {company}) with facts you verified — if you can't fill one, don't send: notify_owner.
-  Then log_activity kind=my_message with that template_id and the exact text you sent. Never use a
-  template for replies or follow-ups — the owner handles those (set_reminder for a follow-up).
-  Upwork proposals don't use templates.
-- Dates: YYYY-MM-DD (means 09:00 in the owner's timezone) or ISO-8601 datetime; get_agenda returns
-  today's date and the timezone.
-- When something needs the owner to act or decide (a client question only they can answer, an offer,
-  a call time to confirm, a deadline close), call notify_owner — they read their Alerts inbox when
-  they're free. Not for routine updates: those are already in the activity log.
-- You can't delete. If you added something by mistake, log a note starting "DELETE:" — the owner
-  removes it during review.
-- Everything you write is shown to the owner for review; be factual and concise.
+This is guidance, not a script. The owner wants work that fits, a professional reputation and no
+wasted time. When a situation isn't covered here or a guideline doesn't fit it, do what a careful
+assistant to the owner would do, note your reasoning, and ask with notify_owner when the decision is
+really theirs. The server enforces the few hard rules; when it refuses a call, its message says why
+and what to do instead.
+
+Deals:
+- Search before adding (find_opportunities matches any form of a posting URL). Giving add_opportunity
+  the posting's own URL also prevents duplicates; without one, nothing does.
+- Record what happens with log_activity and let it move the stage, so the deal follows the
+  conversation. Use update_opportunity for facts and for moves no message implies (proposal sent, won,
+  lost). Mark won or lost on clear evidence, such as a signed contract or an explicit no.
+- Keep a next step on every open deal with set_reminder; a deal without one gets forgotten.
+- The job post goes in `description`, your assessment in `notes`, running commentary in a note
+  activity. `fit` 1-5 is your judgment of the match (5 = ideal for an AI / full-stack software shop).
+- Job applications: the tailored resume and cover letter live in the owner's Google Drive; store their
+  links and the base resume you started from (resume_version, same label each time) so Insights can
+  compare versions.
+
+Messages:
+- Message templates are the owner's examples of messages that recur: how they like to open a LinkedIn
+  conversation, a cold or a warm email. Each category's `purpose` says when it applies; judge whether
+  this situation fits. Use the current message as a model, not a script: say what it says, in the
+  owner's voice and at about its length, written for this person and this post (as is, if it already
+  fits). Fill {placeholders} with facts you checked; if you can't, write around it rather than guess.
+- First-contact categories are for deals still at lead. A category with no current message means the
+  owner hasn't decided what to send: ask them rather than write your own.
+- What is unique to a deal (proposals, cover letters) is written fresh. Replies and follow-ups are the
+  owner's unless a category's purpose says otherwise.
+- After sending, log_activity kind=my_message with the template_id it was based on and what you
+  actually sent, so the owner sees it and Insights counts it per platform.
+- Create or edit categories and messages when the owner asks; they review what you write.
+
+The owner:
+- notify_owner when something needs them to act or decide (a question only they can answer, an offer,
+  a call time, a close deadline), not for routine progress: the activity log already shows that.
+- Everything you write about deals and templates goes to their review, so keep it factual and short.
+- You can't delete. A deal added by mistake: log a note starting "DELETE:"; a wrong template or
+  category: notify_owner.
+- Dates: YYYY-MM-DD (09:00 in the owner's timezone) or ISO-8601; get_agenda gives today and the
+  timezone. Pass "" to clear a text field.
+
+Scheduled agents:
+- Keep run state here, never in local files or your own memory: run_start first (cursors, stops,
+  counters, due rows, your last summary), seen to skip items you already evaluated, count before each
+  capped action, run_end last with your changes. state_get / state_set share lists between agents
+  (e.g. contacts already emailed). A stop row is a brake set by the owner or another agent: obey it.
 """
 
 mcp = MCPServer(
@@ -114,8 +127,9 @@ def find_opportunities(
     include_closed: Annotated[bool, Field(description="Include won/lost deals")] = True,
     limit: Annotated[int, Field(ge=1, le=200)] = 50,
 ) -> Result:
-    """Search the pipeline. Returns compact summaries, most recently active first; more=true means
-    there are further matches beyond `limit`."""
+    """Search the pipeline. Returns compact summaries (id, company, title, stage, whose move, next
+    reminder, template_id, ...), most recently active first; more=true means further matches beyond
+    `limit`. A deal still at stage lead has had nothing sent yet."""
     stages = [stage] if isinstance(stage, str) else stage
 
     def go(s):
@@ -150,17 +164,17 @@ def add_opportunity(
     value: Annotated[float | None, Field(description="Expected contract value in USD")] = None,
     fit: Annotated[int | None, Field(ge=1, le=5, description="How good a match, 1-5")] = None,
     description: Annotated[str | None, Field(description="The job post / project brief")] = None,
-    notes: str | None = None,
+    notes: Annotated[str | None, Field(description="Your assessment: why it fits or doesn't, risks, what to mention")] = None,
     resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
     resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
     cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
-    reminder_at: Annotated[str | None, Field(description="Optional first follow-up date")] = None,
-    reminder_note: str | None = None,
+    reminder_at: Annotated[str | None, Field(description="First next step: YYYY-MM-DD or ISO datetime")] = None,
+    reminder_note: Annotated[str | None, Field(description="What that next step is")] = None,
 ) -> Result:
-    """Add a job or project. If application_url is a posting already tracked, nothing changes and that
-    record is returned with created=false (use update_opportunity / log_activity to change it); if it
-    is a different role, use the role's own URL. deleted=true means the owner deleted it on purpose —
-    leave it alone. Without application_url there is no duplicate check: search first."""
+    """Add a job or project; returns created and the deal's summary. If application_url is a posting
+    already tracked, nothing changes and that deal comes back with created=false (change it with
+    update_opportunity / log_activity); a different role at the same company needs its own URL.
+    deleted=true means the owner deleted it on purpose: leave it alone."""
     data = {k: v for k, v in locals().items() if v is not None}
 
     def go(s):
@@ -172,8 +186,8 @@ def add_opportunity(
 @mcp.tool(annotations=IDEMPOTENT_WRITE)
 def update_opportunity(
     opportunity_id: int,
-    stage: Stage | None = None,
-    lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'")] = None,
+    stage: Annotated[Stage | None, Field(description="For moves no message implies (proposal, won, lost); log_activity moves the rest")] = None,
+    lost_reason: Annotated[LostReason | None, Field(description="Required with stage='lost'. no_response = they went silent (a later client_message reopens it); the others are final")] = None,
     waiting_on: WaitingOn | None = None,
     company: str | None = None,
     title: str | None = None,
@@ -187,16 +201,16 @@ def update_opportunity(
     contact_email: str | None = None,
     contact_url: str | None = None,
     budget: str | None = None,
-    value: float | None = None,
-    fit: Annotated[int | None, Field(ge=1, le=5)] = None,
-    description: str | None = None,
+    value: Annotated[float | None, Field(description="Expected contract value in USD")] = None,
+    fit: Annotated[int | None, Field(ge=1, le=5, description="How good a match, 1-5")] = None,
+    description: Annotated[str | None, Field(description="The job post / project brief")] = None,
     notes: Annotated[str | None, Field(description="Replaces the notes; read them first to append")] = None,
     resume_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the tailored resume sent")] = None,
     resume_version: Annotated[str | None, Field(description="Which base resume it was tailored from, e.g. 'AI engineer v2' — groups results in Insights")] = None,
     cover_letter_url: Annotated[str | None, Field(description="Job applications: Google Drive link to the cover letter sent")] = None,
-    template_id: Annotated[int | None, Field(ge=1, description="The first-contact message template that was sent (normally set via log_activity)")] = None,
+    template_id: Annotated[int | None, Field(ge=1, description="Only to correct the deal's first message template; log_activity sets it")] = None,
 ) -> Result:
-    """Change fields of an opportunity. Only the fields you pass are changed."""
+    """Change facts about a deal; only the fields you pass change. Returns the deal's summary."""
     fields = {k: v for k, v in locals().items() if v is not None and k != "opportunity_id"}
     if not fields:
         raise ToolError("Pass at least one field to change.")
@@ -206,37 +220,90 @@ def update_opportunity(
 @mcp.tool(annotations=WRITE)
 def log_activity(
     opportunity_id: int,
-    kind: Annotated[ActivityKind, Field(description="client_message | my_message | call | note")],
-    summary: Annotated[str, Field(description="What was said or happened, in a sentence or two; for a templated first message, the exact text sent")],
+    kind: Annotated[ActivityKind, Field(description="client_message = the client wrote; my_message = you or the owner sent something; call = booked or held; note = commentary")],
+    summary: Annotated[str, Field(description="What was said or happened, briefly; for a message you sent from a template, the text you actually sent")],
     occurred_at: Annotated[str | None, Field(description="When it happened, if earlier (default now); never in the future")] = None,
-    template_id: Annotated[int | None, Field(ge=1, description="kind=my_message only: id of the get_message_template message you sent (first contact only)")] = None,
+    template_id: Annotated[int | None, Field(ge=1, description="kind=my_message only: id of the template your message was based on")] = None,
+    channel: Annotated[Channel | None, Field(description="kind=my_message only: where you sent it, if not the deal's channel (e.g. emailed a LinkedIn lead)")] = None,
 ) -> Result:
     """Record a message, call or note on the timeline; it moves the deal along by itself:
     client_message → stage replied (if earlier) and it's the owner's move; my_message → a lead becomes
-    applied and it's the client's move; call (booked or held) → stage call. note changes nothing.
-    For a first-contact message sent from a template, pass its template_id so its reply rate is tracked."""
+    applied and it's the client's move; call → stage call (put the call time in set_reminder). note
+    changes nothing. Returns the deal's summary."""
     return _run(lambda s: service.summary(service.log_activity(s, _actor(), opportunity_id, kind, summary, occurred_at,
-                                                               template_id)))
+                                                               template_id, channel)))
+
+
+@mcp.tool(annotations=READ)
+def list_message_templates(
+    category: Annotated[str | None, Field(description="Only this category key; default all")] = None,
+) -> Result:
+    """The owner's message examples: every category (key, name, purpose = when it applies, has_subject)
+    with its messages (id, name, subject, body, placeholders, is_current, usage per platform and as a
+    first message). Read it to see which category fits, or before editing them for the owner."""
+    return _run(lambda s: {"categories": service.library(s, category)})
 
 
 @mcp.tool(annotations=READ)
 def get_message_template(
-    category: Annotated[TemplateCategory, Field(description="linkedin | cold_email | warm_email (warm = they know the owner or came via a network/referral)")],
+    category: Annotated[str, Field(description="Category key from list_message_templates, e.g. linkedin, cold_email, warm_email")],
 ) -> Result:
-    """The owner's current first-contact message for a category: id, name, subject (emails), body and
-    the placeholders to fill. Send it word for word, filling only the placeholders (with verified facts —
-    if you can't, don't send; notify_owner); then log_activity kind=my_message with template_id=id.
-    First contact only — never for replies or follow-ups."""
-    return _run(lambda s: service.template_dict(service.current_template(s, category)))
+    """The current message in a category: id, name, subject (if it has one), body, placeholders, and the
+    category's name and purpose (when it applies). A model, not a script: say what it says in the
+    owner's voice, written for this person; fill placeholders with facts you checked or write around
+    them. Then log_activity kind=my_message with template_id=id and what you sent."""
+    return _run(service.current_message, category)
+
+
+@mcp.tool(annotations=WRITE)
+def save_message_category(
+    name: Annotated[str | None, Field(description="Shown to the owner, e.g. 'Rate card'; required when creating")] = None,
+    purpose: Annotated[str | None, Field(description="When and to whom it applies; agents read it to decide whether to use the category")] = None,
+    has_subject: Annotated[bool | None, Field(description="Its messages have a subject line (emails). Only changeable while it has no messages")] = None,
+    key: Annotated[str | None, Field(description="An existing category's key to change it; omit to create a new one")] = None,
+) -> Result:
+    """Create a message category (omit key) or change one (pass key; only the fields you pass change),
+    when the owner asks. The key is derived from the name and never changes; returns the category."""
+    fields = {k: v for k, v in {"name": name, "purpose": purpose, "has_subject": has_subject}.items() if v is not None}
+    if key is None:
+        return _run(lambda s: {"created": True, "category": service.category_dict(service.create_category(s, _actor(), fields))})
+    if not fields:
+        raise ToolError("Pass name, purpose or has_subject to change.")
+    return _run(lambda s: {"created": False, "category": service.category_dict(service.update_category(s, _actor(), key, fields))})
+
+
+@mcp.tool(annotations=WRITE)
+def save_message_template(
+    category: Annotated[str | None, Field(description="Category key; required when creating")] = None,
+    name: Annotated[str | None, Field(description="Short label, e.g. 'Short intro v2'; required when creating")] = None,
+    body: Annotated[str | None, Field(description="The example message; {placeholders} like {first_name} mark what changes per person. Required when creating")] = None,
+    subject: Annotated[str | None, Field(description="Subject line, for categories with has_subject")] = None,
+    make_current: Annotated[bool | None, Field(description="true = this becomes the one agents work from in its category (only the owner can unset it)")] = None,
+    template_id: Annotated[int | None, Field(ge=1, description="An existing message's id to change it; omit to create a new one")] = None,
+) -> Result:
+    """Create a message in a category (omit template_id) or edit one (pass it; only the fields you pass
+    change), when the owner asks. A new category's first message becomes current by itself. A different
+    approach is a new message, so Insights can compare them; a small fix is an edit."""
+    fields = {k: v for k, v in {"name": name, "body": body, "subject": subject, "is_current": make_current}.items()
+              if v is not None}
+    if template_id is None:
+        return _run(lambda s: {"created": True, "message": service.template_dict(
+            service.create_template(s, _actor(), {"category": category, **fields}))})
+    if category is not None:
+        fields["category"] = category  # the service refuses a move to another category
+    if not fields:
+        raise ToolError("Pass name, body, subject or make_current to change.")
+    return _run(lambda s: {"created": False, "message": service.template_dict(service.update_template(s, _actor(), template_id, fields))})
 
 
 @mcp.tool(annotations=WRITE)
 def set_reminder(
     opportunity_id: int,
-    due: Annotated[str, Field(description="YYYY-MM-DD or ISO datetime")],
+    due: Annotated[str, Field(description="YYYY-MM-DD (09:00 owner's time) or ISO datetime")],
     note: Annotated[str, Field(description="The next step, e.g. 'Follow up if no reply'")] = "",
 ) -> Result:
-    """Schedule the next step for an opportunity. It shows up on the owner's Today list when due."""
+    """Schedule the next step for an opportunity; returns the reminder (with its id). It shows up on the
+    owner's Today list when due."""
     return _run(lambda s: service.reminder_dict(service.add_reminder(s, _actor(), opportunity_id, due, note)))
 
 
@@ -279,7 +346,107 @@ def get_agenda() -> Result:
 
 @mcp.tool(annotations=READ)
 def pipeline_stats(days: Annotated[int | None, Field(ge=1, description="Look-back window in days (default 90); null = all time")] = 90) -> Result:
-    """Funnel and conversion rates (reply, win) by channel, network and kind, and by first-contact
-    message variant (by_template) and base resume (by_resume_version); open pipeline by stage;
-    12 weeks of activity."""
+    """Funnel and conversion rates (reply, win) by channel, network and kind, and by first message
+    (by_template) and base resume (by_resume_version); how often each message template was sent in
+    the window, per platform (template_usage); open pipeline by stage; 12 weeks of activity."""
     return _run(service.stats, days)
+
+
+# ---------------------------------------------------------------- agent state (durable run state)
+
+# A change is a plain object, checked one by one in the service: a typed model would make pydantic reject the
+# whole call (and leave a run_end's lease held) over one bad change, and drop unknown fields silently.
+CHANGES_DOC = ("Each {section, key, value, op, due, expires, ns}. value: text, number or JSON (fixed sections max "
+               "500 characters, lists 16,000); null deletes; omit it to change only due/expires. op: set (default) | "
+               "merge (update fields of a JSON object; null drops one) | max (keep the larger: numbers, or ISO times) | "
+               "delete. due (list rows: when to work it) and expires: ISO time, now, or 30m/12h/7d; null clears, "
+               "omitted keeps. ns: another namespace, e.g. a shared one.")
+Changes = list[dict[str, Any]]
+
+
+class CountItem(BaseModel):
+    ns: str
+    key: str
+    period: CounterPeriod = "day"
+    by: Annotated[int, Field(description="Units to spend; 0 reads; negative gives back")] = 1
+    limit: Annotated[int | None, Field(ge=0, description="Refuse if this would pass it")] = None
+
+
+@mcp.tool(annotations=WRITE)
+def run_start(
+    ns: Annotated[str, Field(description="Your namespace: your agent name, e.g. 'upwork'")],
+    worker: Annotated[str, Field(description="Which job in the ns, e.g. finder, sender")] = "main",
+    also: Annotated[list[str] | None, Field(description="Shared namespaces you obey, e.g. ['linkedin']")] = None,
+    include: Annotated[list[str] | None, Field(description="List sections whose due rows you want, e.g. ['targets']")] = None,
+    lease_min: Annotated[int, Field(ge=1, le=1440, description="Minutes before a crashed run frees the lease")] = 50,
+) -> Result:
+    """Call first in every scheduled run. Returns run_id, now, your fixed sections (`owner` names the owner's
+    rows), list sizes, stops from `also`, counters, this worker's last run, and per `include` list its rows
+    due now (earliest first, max 50). busy=true: this worker is already running; stop. Obey every stop."""
+    return _run(service.run_start, ns, worker, also, include, lease_min)
+
+
+@mcp.tool(annotations=WRITE)
+def run_end(
+    run_id: int,
+    status: Annotated[RunStatus, Field(description="quiet = nothing happened; routine; attention = the owner should look; error")],
+    summary: Annotated[str | None, Field(description="One line: what happened")] = None,
+    counts: Annotated[dict[str, int | float] | None, Field(description='e.g. {"applied": 3, "skipped": 12}')] = None,
+    changes: Annotated[Changes | None, Field(description=CHANGES_DOC, max_length=100)] = None,
+) -> Result:
+    """Call last in every run: records status, summary and counts, applies your changes (as state_set) and
+    frees the lease. Returns applied and rejected changes. Safe to retry: a repeat returns the first reply
+    and applies nothing."""
+    return _run(lambda s: service.run_end(s, _actor(), run_id, status, summary, counts, changes))
+
+
+@mcp.tool(annotations=READ)
+def state_get(
+    ns: Annotated[str | list[str], Field(description="A namespace, a list, or '*' for all")],
+    sections: Annotated[list[str] | None, Field(description="Only these sections")] = None,
+    keys: Annotated[list[str] | None, Field(description="Only these keys")] = None,
+    q: Annotated[str | None, Field(description="Case-insensitive text to find in keys and values")] = None,
+    due_before: Annotated[str | None, Field(description="Only rows due by then: ISO time, 'now' or e.g. 2h")] = None,
+    limit: Annotated[int, Field(ge=1, le=500)] = 100,
+    runs_since: Annotated[str | None, Field(description="e.g. 24h or an ISO time: adds a run digest per ns and worker")] = None,
+) -> Result:
+    """Read rows grouped ns → section → key (value, by, updated_at, due_at; locked = an owner row), earliest
+    due first; more=true if limit cut it. runs_since adds per worker: run count, count by status, summed
+    counts, summaries of non-quiet runs; then rows come only with sections, keys, q or due_before."""
+    return _run(service.state_get, ns, sections, keys, q, due_before, limit, runs_since)
+
+
+@mcp.tool(annotations=WRITE)
+def state_set(
+    ns: str,
+    changes: Annotated[Changes, Field(min_length=1, max_length=100, description=CHANGES_DOC)],
+) -> Result:
+    """Write rows; each invalid change is rejected with its reason. Fixed sections (in run_start, values max
+    500 characters, row caps): next 30, stop 5, blocker 20, waiting 20, lesson 15, platform 10, proposal 10.
+    Any other section is a list: 500 rows, values max 16,000, schedulable with due. Owner rows: fixed are
+    read-only; in lists only merge."""
+    return _run(lambda s: service.state_set(s, _actor(), ns, changes))
+
+
+@mcp.tool(annotations=WRITE)
+def count(
+    items: Annotated[list[CountItem], Field(min_length=1, max_length=20)],
+    idem: Annotated[str | None, Field(description="Unique key per action; retrying the same call within 24h replays its first success")] = None,
+) -> Result:
+    """Check and spend caps before an action, all or nothing. ok=false: nothing counted, don't act —
+    `refused` names the cap, or `stopped` quotes a stop row in one of the namespaces. Windows (UTC): day,
+    week (ISO), month, total; a new window starts at 0. One item per cap, e.g. a shared daily and your own."""
+    return _run(service.count, [i.model_dump(exclude_none=True) for i in items], idem)
+
+
+@mcp.tool(annotations=WRITE)
+def seen(
+    ns: str,
+    source: Annotated[str, Field(description="What the ids are, e.g. upwork-jobs, forum-comments")],
+    ids: Annotated[list[str | int], Field(min_length=1, max_length=500)],
+    mark: Annotated[bool, Field(description="false = only check, mark later")] = True,
+    ttl_days: Annotated[int, Field(ge=1, le=3650, description="How long they stay seen")] = service.SEEN_DAYS,
+) -> Result:
+    """Skip what you already evaluated: returns `new`, the ids not seen in this ns+source (or whose ttl ran
+    out), as you sent them, and marks them seen for ttl_days."""
+    return _run(service.seen, ns, source, ids, mark, ttl_days)

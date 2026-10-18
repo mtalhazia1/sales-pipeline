@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type Funnel, type Stats } from "../lib/api";
 import { money, pct } from "../lib/format";
-import { STAGE_STYLE } from "../lib/meta";
+import { STAGE_STYLE, useMeta } from "../lib/meta";
 import { PageHeader } from "../components/Shell";
 import { Empty, PageError, PageLoading, Segmented, cx } from "../components/ui";
 
@@ -60,6 +60,9 @@ export function Insights() {
                 <FunnelTable rows={s.by_template} />
               </Card>
             )}
+            <Card title="Message templates sent" sub="how often each template was used in the window, by platform">
+              <TemplateUsage rows={s.template_usage} />
+            </Card>
             {s.by_resume_version.length > 0 && (
               <Card title="By resume version" sub="job applications, by the base resume tailored from">
                 <FunnelTable rows={s.by_resume_version} />
@@ -99,7 +102,7 @@ function Tile({ label, value, sub, className }: { label: string; value: string |
 
 function Card({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-line bg-panel p-4">
+    <section className="min-w-0 rounded-2xl border border-line bg-panel p-4">
       <div className="mb-3">
         <h2 className="font-semibold">{title}</h2>
         {sub && <div className="text-[13px] text-muted">{sub}</div>}
@@ -238,6 +241,102 @@ function OpenPipeline({ rows }: { rows: Stats["open_by_stage"] }) {
             <span className="w-14 text-right text-xs text-muted tabular-nums">{r.value ? money(r.value) : ""}</span>
           </div>
         ))}
+    </div>
+  );
+}
+
+/** Stacked bars: one row per template, a segment per platform. Colour follows the platform (fixed slot by its
+ *  place in the channel list), so filtering never repaints one; the table view carries the exact numbers. */
+function TemplateUsage({ rows }: { rows: Stats["template_usage"] }) {
+  const { data: meta } = useMeta();
+  const [view, setView] = useState<"chart" | "table">("chart");
+  const [hover, setHover] = useState<string | null>(null);
+  if (!rows.length) return <div className="py-6 text-center text-[13px] text-muted">No templated messages logged in this window yet.</div>;
+  const order = meta?.channels.map((c) => c.value) ?? [];
+  const color = (ch: string) => `var(--series-${Math.min(order.indexOf(ch), 6) + 1})`;
+  const present = order.filter((ch) => rows.some((r) => r.by_channel.some((b) => b.key === ch)));
+  const label = (ch: string) => meta?.channels.find((c) => c.value === ch)?.label ?? ch;
+  const max = Math.max(...rows.map((r) => r.uses));
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+          {present.map((ch) => (
+            <span key={ch} className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-sm" style={{ background: color(ch) }} />
+              {label(ch)}
+            </span>
+          ))}
+        </div>
+        <Segmented value={view} onChange={setView} options={[{ value: "chart", label: "Chart" }, { value: "table", label: "Table" }]} />
+      </div>
+      {view === "table" ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[13px]">
+            <thead className="text-xs text-muted">
+              <tr>
+                <th className="pb-2 text-left font-medium">Message</th>
+                {present.map((ch) => (
+                  <th key={ch} className="pb-2 text-right font-medium">
+                    {label(ch)}
+                  </th>
+                ))}
+                <th className="pb-2 text-right font-medium">Total</th>
+              </tr>
+            </thead>
+            <tbody className="tabular-nums">
+              {rows.map((r) => (
+                <tr key={r.key} className="border-t border-line/60">
+                  <td className="py-2 font-medium">{r.label}</td>
+                  {present.map((ch) => (
+                    <td key={ch} className="py-2 text-right">
+                      {r.by_channel.find((b) => b.key === ch)?.count ?? "—"}
+                    </td>
+                  ))}
+                  <td className="py-2 text-right font-semibold">{r.uses}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((r) => (
+            <div key={r.key}>
+              <div className="mb-1 text-[13px] font-medium [overflow-wrap:anywhere]">
+                {r.label}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex h-3 gap-[2px]" style={{ width: `calc((100% - 2.5rem) * ${r.uses / max})` }}>
+                  {r.by_channel.map((b) => {
+                    const id = `${r.key}:${b.key}`;
+                    return (
+                      <div
+                        key={b.key}
+                        className={cx("relative h-full first:rounded-l-[4px] last:rounded-r-[4px] transition-opacity", hover && hover !== id && "opacity-40")}
+                        style={{ flex: b.count, background: color(b.key) }}
+                        onMouseEnter={() => setHover(id)}
+                        onMouseLeave={() => setHover(null)}
+                        onClick={() => setHover(hover === id ? null : id)}
+                      >
+                        {hover === id && (
+                          <div className="anim-pop absolute bottom-full left-1/2 z-10 mb-2 w-max -translate-x-1/2 rounded-lg border border-line bg-panel px-3 py-2 text-xs shadow-lg">
+                            <div className="font-semibold">{b.label}</div>
+                            <div className="text-muted">
+                              Sent <span className="font-semibold text-fg tabular-nums">{b.count}</span> of {r.uses}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <span className="w-8 shrink-0 text-[13px] font-semibold tabular-nums">{r.uses}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

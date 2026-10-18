@@ -14,9 +14,10 @@ LostReason = Literal["rejected", "no_response", "declined", "filled", "other"]
 WaitingOn = Literal["me", "client"]
 # Things that happen to an opportunity, logged by a human or an agent.
 ActivityKind = Literal["client_message", "my_message", "call", "note"]
-# First-contact messages the owner writes (a few variants each, one "current"); agents send the current
-# one word for word. Replies are the owner's own.
-TemplateCategory = Literal["linkedin", "cold_email", "warm_email"]
+# Agent state (durable memory for scheduled agents): how a run went, and counter windows.
+RunStatus = Literal["quiet", "routine", "attention", "error"]
+CounterPeriod = Literal["day", "week", "month", "total"]
+StateOp = Literal["set", "merge", "max", "delete"]
 
 KINDS: list[tuple[str, str]] = [("job", "Job"), ("project", "Project")]
 
@@ -63,13 +64,28 @@ ACTIVITY_KINDS: list[tuple[str, str]] = [
     ("note", "Note"),
 ]
 
-TEMPLATE_CATEGORIES: list[tuple[str, str]] = [
-    ("linkedin", "LinkedIn message"),
-    ("cold_email", "Cold email"),
-    ("warm_email", "Warm email"),
+# Agent state sections. These fixed ones come back in every run_start, so each is capped to keep that
+# brief small; any other section name is a list (one row per key), read on demand with state_get.
+STATE_SECTIONS: list[tuple[str, str, int]] = [
+    ("next", "Cursors, due times, statuses", 30),
+    ("stop", "Flags that halt an activity", 5),
+    ("blocker", "Stuck: what the owner must do", 20),
+    ("waiting", "Waiting on the owner", 20),
+    ("lesson", "Short learned rules", 15),
+    ("platform", "How a site behaves", 10),
+    ("proposal", "Suggested changes for the owner", 10),
 ]
-# Categories whose messages have a subject line.
-EMAIL_CATEGORIES = {"cold_email", "warm_email"}
+LIST_CAP = 500  # rows per list section per namespace
+# Longest value (characters; JSON text for non-strings): fixed rows stay short so the brief stays small,
+# list rows can hold a draft.
+FIXED_VALUE_MAX, LIST_VALUE_MAX = 500, 16_000
+
+RUN_STATUSES: list[tuple[str, str]] = [
+    ("quiet", "Quiet"),  # nothing happened
+    ("routine", "Routine"),  # did its normal work
+    ("attention", "Attention"),  # the owner should look
+    ("error", "Error"),
+]
 
 STAGE_ORDER = {key: i for i, (key, _) in enumerate(STAGES)}
 OPEN_STAGES = {"lead", "matcher", "applied", "replied", "call", "proposal"}
@@ -109,7 +125,7 @@ def meta() -> dict:
         "open_stages": [k for k, _ in STAGES if k in OPEN_STAGES],
         "lost_reasons": as_list(LOST_REASONS),
         "activity_kinds": as_list(ACTIVITY_KINDS),
-        "template_categories": as_list(TEMPLATE_CATEGORIES),
-        "email_categories": sorted(EMAIL_CATEGORIES),
         "channel_by_host": CHANNEL_BY_HOST,
+        "state_sections": [{"value": k, "label": v, "cap": cap} for k, v, cap in STATE_SECTIONS],
+        "run_statuses": as_list(RUN_STATUSES),
     }

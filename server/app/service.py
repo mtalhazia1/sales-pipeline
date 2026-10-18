@@ -2,22 +2,41 @@
 these functions, so both always behave identically — including the audit trail and the review
 flag: anything an agent writes is marked `needs_review` until a human looks at it."""
 
+import hashlib
+import json
 import math
 import re
 import statistics
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, get_args
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, or_, select, update as sql_update
+from sqlalchemy import String, and_, func, or_, select, text, type_coerce
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import update as sql_update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import domain
 from app.db import iso, utcnow
-from app.models import Event, MessageTemplate, Notification, Opportunity, Reminder, Setting
+from app.models import (
+    AgentRun,
+    Event,
+    IdemKey,
+    MessageCategory,
+    MessageTemplate,
+    Notification,
+    Opportunity,
+    Reminder,
+    SeenItem,
+    Setting,
+    StateCounter,
+    StateRow,
+)
 
 
 class ServiceError(Exception):
@@ -126,13 +145,16 @@ def parse_when(value: str | datetime | None, tz: ZoneInfo, default_hour: int = 9
                                f"(today is {datetime.now(tz).date().isoformat()} in {tz}).") from e
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz)
-    return dt.astimezone(UTC).replace(tzinfo=None)
+    try:
+        return dt.astimezone(UTC).replace(tzinfo=None)
+    except OverflowError as e:  # e.g. 9999-12-31T23:00-05:00 is past year 9999 in UTC
+        raise ServiceError(f"The date {value!r} is out of range.") from e
 
 
 URL_FIELDS = ("application_url", "company_url", "contact_url", "url", "resume_url", "cover_letter_url")
 # Long enough for any real job post; bounded so one bad agent call can't store megabytes.
 MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "summary": 10_000, "body": 10_000, "resume_version": 120,
-           "name": 120, "subject": 300}
+           "name": 120, "subject": 300, "purpose": 2000}
 
 
 def _clean(field: str, value: Any) -> Any:
@@ -218,9 +240,9 @@ def _stamp_milestones(opp: Opportunity, stage: str, when: datetime) -> None:
 
 
 def _event(s: Session, opp: Opportunity, actor: Actor, kind: str, body: str | None = None,
-           changes: dict | None = None, occurred_at: datetime | None = None) -> Event:
+           changes: dict | None = None, occurred_at: datetime | None = None, **usage: Any) -> Event:
     ev = Event(opportunity_id=opp.id, kind=kind, body=body, changes=changes, actor_type=actor.type,
-               actor_name=actor.name, occurred_at=occurred_at or utcnow())
+               actor_name=actor.name, occurred_at=occurred_at or utcnow(), **usage)
     s.add(ev)
     return ev
 
@@ -271,7 +293,7 @@ def summary(opp: Opportunity) -> dict:
         "value": opp.value,
         "budget": opp.budget,
         "fit": opp.fit,
-        # So an agent can see from search results what was already sent (and not send a template twice).
+        # The deal's first message (Insights credits replies to it). "Already contacted" is the stage: past lead.
         "template_id": opp.template_id,
         "resume_url": opp.resume_url,
         "cover_letter_url": opp.cover_letter_url,
@@ -319,7 +341,8 @@ def reminder_dict(r: Reminder) -> dict:
 
 def event_dict(e: Event, opp: Opportunity | None = None) -> dict:
     d = {"id": e.id, "opportunity_id": e.opportunity_id, "kind": e.kind, "body": e.body, "changes": e.changes,
-         "actor_type": e.actor_type, "actor_name": e.actor_name, "occurred_at": iso(e.occurred_at)}
+         "actor_type": e.actor_type, "actor_name": e.actor_name, "occurred_at": iso(e.occurred_at),
+         "channel": e.channel, "template": template_ref(e.template)}
     if opp is not None:
         d["company"], d["title"] = opp.company, opp.title
     return d
@@ -453,22 +476,23 @@ def archive(s: Session, actor: Actor, opp_id: int) -> None:
 
 
 def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | None,
-                 occurred_at: str | datetime | None = None, template_id: int | None = None) -> Opportunity:
+                 occurred_at: str | datetime | None = None, template_id: int | None = None,
+                 channel: str | None = None) -> Opportunity:
     """Record something that happened and move the deal along the obvious way:
     a client message → stage Replied (if earlier) and it's your move; your message → their move;
-    a call → stage Call booked (if earlier). `template_id` on a my_message records which
-    first-contact message variant was sent."""
+    a call → stage Call booked (if earlier). A my_message records the platform it went out on
+    (`channel`, default the deal's) and, with `template_id`, which template it was based on — that is
+    the usage count. The first template sent before the client ever replied is the deal's first
+    message, which Insights compares by reply rate."""
     if kind not in {k for k, _ in domain.ACTIVITY_KINDS}:
         raise ServiceError(f"kind must be one of: {', '.join(k for k, _ in domain.ACTIVITY_KINDS)}.")
-    if template_id is not None and kind != "my_message":
-        raise ServiceError("template_id only goes with kind='my_message' (the first message you sent).")
+    if (template_id is not None or channel) and kind != "my_message":
+        raise ServiceError("template_id and channel only go with kind='my_message' (a message you sent).")
     opp = _get(s, opp_id)
     if template_id is not None:
         template_id = _clean("template_id", template_id)
         _assignable_template(s, template_id, opp.template_id)
-        if opp.template_id not in (None, template_id):
-            raise ServiceError(f"This deal's first message is already recorded ({opp.template.name}). Templates are for "
-                               "first contact only — log this message again without template_id.")
+    channel = _clean("channel", channel) if channel else None
     body = _clean("summary", body)  # the MCP parameter name, so a too-long error makes sense to the agent
     when = parse_when(occurred_at, get_timezone(s)) or utcnow()
     if when > utcnow() + timedelta(minutes=10):
@@ -477,7 +501,8 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     order = domain.STAGE_ORDER
     before = {"stage": opp.stage, "waiting_on": opp.waiting_on, "inbound": opp.inbound, "lost_reason": opp.lost_reason,
               "template_id": opp.template_id}
-    if template_id is not None:
+    # Later templates (a follow-up, a rate card) are counted as uses but never re-credit the deal's reply.
+    if template_id is not None and opp.template_id is None and (opp.replied_at is None or when < opp.replied_at):
         opp.template_id = template_id
     if kind == "client_message":
         if opp.stage == "lead":
@@ -507,7 +532,8 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     _touch(opp, actor, activity=False)
     if kind != "note":  # a note is bookkeeping, not contact with the client
         opp.last_activity_at = max(opp.last_activity_at, when)
-    _event(s, opp, actor, kind, body, _loggable(changes, s) or None, occurred_at=when)
+    usage = {"channel": channel or opp.channel, "template_id": template_id} if kind == "my_message" else {}
+    _event(s, opp, actor, kind, body, _loggable(changes, s) or None, occurred_at=when, **usage)
     return opp
 
 
@@ -596,7 +622,7 @@ def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
     s.delete(r)
 
 
-# ---------------------------------------------------------------- first-contact message templates
+# ---------------------------------------------------------------- message templates (recommended examples, by category)
 
 def template_ref(t: MessageTemplate | None) -> dict | None:
     return {"id": t.id, "category": t.category, "name": t.name} if t else None
@@ -607,12 +633,134 @@ def placeholders(t: MessageTemplate) -> list[str]:
     return list(dict.fromkeys(re.findall(r"\{(\w+)\}", f"{t.subject or ''}\n{t.body}")))
 
 
+def category_dict(c: MessageCategory) -> dict:
+    return {"key": c.key, "name": c.name, "purpose": c.purpose, "has_subject": c.has_subject,
+            "needs_review": c.needs_review, "updated_by": c.updated_by, "archived": c.archived_at is not None,
+            "created_at": iso(c.created_at), "updated_at": _version(c)}
+
+
 def template_dict(t: MessageTemplate, usage: dict | None = None) -> dict:
     return {"id": t.id, "category": t.category, "name": t.name, "subject": t.subject, "body": t.body,
             "placeholders": placeholders(t),
             "is_current": t.is_current, "archived": t.archived_at is not None,
-            "created_at": iso(t.created_at), "updated_at": iso(t.updated_at),
+            "needs_review": t.needs_review, "updated_by": t.updated_by,
+            "created_at": iso(t.created_at), "updated_at": _version(t),
             **({"usage": usage} if usage is not None else {})}
+
+
+def _reviewed_by(obj: MessageCategory | MessageTemplate, actor: Actor) -> None:
+    """Agents write templates on the owner's behalf: flag it until a person has looked (same rule as deals)."""
+    obj.needs_review = actor.is_agent
+    obj.updated_by = actor.name
+    obj.updated_at = utcnow()
+
+
+def _version(obj: MessageCategory | MessageTemplate) -> str:
+    """`updated_at` to the microsecond: the web UI sends it back as the version it showed."""
+    return obj.updated_at.isoformat(timespec="microseconds") + "Z"
+
+
+def _seen_version(obj: MessageCategory | MessageTemplate, data: dict) -> dict:
+    """The web UI sends back the `updated_at` it showed, so a save or "looks good" never lands on a newer
+    version an agent wrote since. Returns the remaining fields."""
+    data = dict(data)
+    seen = data.pop("updated_at", None)
+    if seen is not None and seen != _version(obj):
+        raise ServiceError(f"{obj.name!r} changed since you opened it (by {obj.updated_by}). Reload and look again.", 409)
+    return data
+
+
+def _check_types(data: dict, allowed: set[str], text: tuple[str, ...], flags: tuple[str, ...]) -> None:
+    unknown = set(data) - allowed
+    if unknown:
+        raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    for k in text:
+        if k in data and not isinstance(data[k], str | None):
+            raise ServiceError(f"{k} must be text.")
+    for k in flags:
+        if k in data and not isinstance(data[k], bool):
+            raise ServiceError(f"{k} is true or false.")
+
+
+def _live_keys(s: Session) -> list[str]:
+    return list(s.scalars(select(MessageCategory.key).where(MessageCategory.archived_at.is_(None)).order_by(MessageCategory.id)))
+
+
+def _category(s: Session, key: Any) -> MessageCategory:
+    c = s.scalar(select(MessageCategory).where(MessageCategory.key == key)) if isinstance(key, str) else None
+    if not c or c.archived_at:
+        raise ServiceError(f"No message category {key!r}. Categories: {', '.join(_live_keys(s)) or 'none yet'}.", 404)
+    return c
+
+
+def _category_fields(s: Session, data: dict, current: MessageCategory | None) -> dict:
+    _check_types(data, {"name", "purpose", "has_subject"}, ("name", "purpose"), ("has_subject",))
+    out = {k: _clean(k, data[k]) for k in ("name", "purpose") if k in data}
+    if "name" in out:
+        if not out["name"]:
+            raise ServiceError("name can't be empty.")
+        clash = s.scalar(select(MessageCategory).where(func.casefold(MessageCategory.name) == out["name"].casefold(),
+                                                       MessageCategory.archived_at.is_(None)))
+        if clash and clash is not current:
+            raise ServiceError(f"There is already a category named {clash.name!r} (key {clash.key!r}).")
+    if "has_subject" in data:
+        out["has_subject"] = data["has_subject"]
+        if current and out["has_subject"] != current.has_subject and s.scalar(
+                select(MessageTemplate.id).where(MessageTemplate.category == current.key, MessageTemplate.archived_at.is_(None))):
+            raise ServiceError("Whether messages have a subject line can only change while the category has no messages.")
+    return out
+
+
+def categories(s: Session, *, include_archived: bool = False) -> list[MessageCategory]:
+    stmt = select(MessageCategory).order_by(MessageCategory.id)
+    if not include_archived:
+        stmt = stmt.where(MessageCategory.archived_at.is_(None))
+    return list(s.scalars(stmt))
+
+
+def create_category(s: Session, actor: Actor, data: dict) -> MessageCategory:
+    _write_lock(s)  # two agents creating the same name: the second sees the first and is refused
+    fields = _category_fields(s, data, None)
+    if not fields.get("name"):
+        raise ServiceError("A category needs a name.")
+    # The key is what agents pass around, so it is derived once and never changes (renaming keeps it).
+    ascii_name = unicodedata.normalize("NFKD", fields["name"]).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "_", ascii_name).strip("_")[:36].strip("_") or "category"
+    taken = set(s.scalars(select(MessageCategory.key).where(MessageCategory.key.like(f"{base}%"))))
+    key = next(k for n in range(1, 1000) if (k := base if n == 1 else f"{base}_{n}") not in taken)
+    now = utcnow()
+    c = MessageCategory(key=key, created_at=now, **{"has_subject": False, **fields})
+    _reviewed_by(c, actor)
+    s.add(c)
+    s.flush()
+    return c
+
+
+def update_category(s: Session, actor: Actor, key: str, data: dict) -> MessageCategory:
+    _write_lock(s)
+    c = _category(s, key)
+    data = _seen_version(c, data)
+    fields = {k: v for k, v in _category_fields(s, data, c).items() if getattr(c, k) != v}
+    for k, v in fields.items():
+        setattr(c, k, v)
+    if fields:
+        _reviewed_by(c, actor)
+    elif not actor.is_agent:  # a person saving it unchanged ("looks good") has reviewed it
+        c.needs_review = False
+    return c
+
+
+def delete_category(s: Session, key: str) -> None:
+    """Only an empty category can go. One whose (deleted) messages have history is archived so Insights can
+    still name them."""
+    c = _category(s, key)
+    rows = s.scalars(select(MessageTemplate).where(MessageTemplate.category == c.key)).all()
+    if any(not t.archived_at for t in rows):
+        raise ServiceError("Delete the messages in this category first.")
+    if rows:
+        c.archived_at, c.needs_review = utcnow(), False
+    else:
+        s.delete(c)
 
 
 def _template(s: Session, template_id: int) -> MessageTemplate:
@@ -631,24 +779,17 @@ def _assignable_template(s: Session, template_id: int, current_id: int | None) -
     return t
 
 
-def _template_fields(data: dict, category: str) -> dict:
-    unknown = set(data) - {"name", "subject", "body", "is_current", "category"}
-    if unknown:
-        raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
-    for k in ("name", "subject", "body"):
-        if k in data and not isinstance(data[k], str | None):
-            raise ServiceError(f"{k} must be text.")
-    if "is_current" in data and not isinstance(data["is_current"], bool):
-        raise ServiceError("is_current is true or false.")
+def _template_fields(data: dict, category: MessageCategory) -> dict:
+    _check_types(data, {"name", "subject", "body", "is_current", "category"}, ("name", "subject", "body"), ("is_current",))
     out = {k: _clean(k, data[k]) for k in ("name", "subject", "body") if k in data}
     for k in ("name", "body"):
         if k in out and not out[k]:
             raise ServiceError(f"{k} can't be empty.")
-    if category in domain.EMAIL_CATEGORIES:
+    if category.has_subject:
         if "subject" in out and not out["subject"]:
-            raise ServiceError("An email needs a subject line.")
+            raise ServiceError(f"A {category.name} needs a subject line.")
     else:
-        out.pop("subject", None)  # LinkedIn messages have no subject line
+        out.pop("subject", None)  # e.g. LinkedIn messages have no subject line
     if "is_current" in data:
         out["is_current"] = data["is_current"]
     return out
@@ -661,78 +802,130 @@ def _make_current(s: Session, t: MessageTemplate) -> None:
     t.is_current = True
 
 
-def templates(s: Session, *, include_archived: bool = False) -> list[dict]:
-    """Every variant with how its first messages did (all time, outbound deals that were sent)."""
+def _uses(s: Session, since: datetime | None = None) -> list[tuple[int, str | None, datetime]]:
+    """(template_id, channel, when) for every logged message that used a template, on live deals."""
+    stmt = (select(Event.template_id, Event.channel, Event.occurred_at)
+            .join(Opportunity, Event.opportunity_id == Opportunity.id)
+            .where(Event.template_id.is_not(None), Opportunity.archived_at.is_(None)))
+    if since:
+        stmt = stmt.where(Event.occurred_at >= since)
+    return [tuple(r) for r in s.execute(stmt)]
+
+
+def templates(s: Session, *, include_archived: bool = False, category: str | None = None) -> list[dict]:
+    """Every variant with its usage (all time): how often it was sent and on which platform, and — as a
+    deal's first message — how those deals did (outbound deals that were sent)."""
     stmt = select(MessageTemplate).order_by(MessageTemplate.category, MessageTemplate.id)
     if not include_archived:
         stmt = stmt.where(MessageTemplate.archived_at.is_(None))
-    used = s.scalars(select(Opportunity).where(Opportunity.template_id.is_not(None),
-                                               Opportunity.archived_at.is_(None))).unique().all()
+    if category is not None:
+        stmt = stmt.where(MessageTemplate.category == _category(s, category).key)
+    first = s.scalars(select(Opportunity).where(Opportunity.template_id.is_not(None),
+                                                Opportunity.archived_at.is_(None))).unique().all()
+    uses = _uses(s)
     out = []
     for t in s.scalars(stmt):
-        mine = [o for o in used if o.template_id == t.id and not o.inbound and o.applied_at]
+        mine = [o for o in first if o.template_id == t.id and not o.inbound and o.applied_at]
         replied = sum(1 for o in mine if o.replied_at)
-        out.append(template_dict(t, {"sent": len(mine), "replied": replied, "calls": sum(1 for o in mine if o.call_at),
-                                     "won": sum(1 for o in mine if o.stage == "won"),
-                                     "reply_rate": round(replied / len(mine), 3) if mine else None}))
+        used = [(ch, when) for tid, ch, when in uses if tid == t.id]
+        by_channel: dict[str, int] = {}
+        for ch, _ in used:
+            by_channel[ch or "other"] = by_channel.get(ch or "other", 0) + 1
+        out.append(template_dict(t, {
+            "uses": len(used), "by_channel": by_channel, "last_used_at": iso(max((w for _, w in used), default=None)),
+            "sent": len(mine), "replied": replied, "calls": sum(1 for o in mine if o.call_at),
+            "won": sum(1 for o in mine if o.stage == "won"), "reply_rate": round(replied / len(mine), 3) if mine else None}))
     return out
 
 
+def library(s: Session, category: str | None = None) -> list[dict]:
+    """Categories (with their purpose) and their live messages — what an agent reads before sending or editing."""
+    rows = [_category(s, category)] if category is not None else categories(s)
+    msgs = templates(s, category=category)
+    return [{**category_dict(c), "messages": [m for m in msgs if m["category"] == c.key]} for c in rows]
+
+
 def current_template(s: Session, category: str) -> MessageTemplate:
-    if category not in {k for k, _ in domain.TEMPLATE_CATEGORIES}:
-        raise ServiceError(f"category must be one of: {', '.join(k for k, _ in domain.TEMPLATE_CATEGORIES)}.")
-    t = s.scalar(select(MessageTemplate).where(MessageTemplate.category == category, MessageTemplate.is_current,
+    c = _category(s, category)
+    t = s.scalar(select(MessageTemplate).where(MessageTemplate.category == c.key, MessageTemplate.is_current,
                                                MessageTemplate.archived_at.is_(None)))
     if not t:
-        raise ServiceError(f"There is no current {domain.label(domain.TEMPLATE_CATEGORIES, category)} — the owner "
-                           "hasn't picked one. Don't send anything; tell them with notify_owner.", 404)
+        why = "none is picked as current" if _has_messages(s, c.key) else "it has no messages yet"
+        raise ServiceError(f"There is no current {c.name} ({why}). Don't write one yourself; tell the owner with "
+                           "notify_owner.", 404)
     return t
 
 
-def create_template(s: Session, data: dict) -> MessageTemplate:
-    category = data.get("category")
-    if category not in {k for k, _ in domain.TEMPLATE_CATEGORIES}:
-        raise ServiceError(f"category must be one of: {', '.join(k for k, _ in domain.TEMPLATE_CATEGORIES)}.")
-    fields = _template_fields(data, category)
+def current_message(s: Session, category: str) -> dict:
+    """What an agent sends from: the current message plus its category's purpose (when to use it)."""
+    t = current_template(s, category)
+    c = _category(s, category)
+    return {**template_dict(t), "category_name": c.name, "purpose": c.purpose}
+
+
+def _has_messages(s: Session, key: str) -> bool:
+    return s.scalar(select(MessageTemplate.id).where(MessageTemplate.category == key,
+                                                     MessageTemplate.archived_at.is_(None)).limit(1)) is not None
+
+
+def create_template(s: Session, actor: Actor, data: dict) -> MessageTemplate:
+    if data.get("category") is None:
+        raise ServiceError("Pass the category the message belongs to (a key from list_message_templates).")
+    c = _category(s, data.get("category"))
+    fields = _template_fields(data, c)
     if not fields.get("name") or not fields.get("body"):
         raise ServiceError("A message needs a name and a body.")
-    if category in domain.EMAIL_CATEGORIES and not fields.get("subject"):
-        raise ServiceError("An email needs a subject line.")
+    if c.has_subject and not fields.get("subject"):
+        raise ServiceError(f"A {c.name} needs a subject line.")
+    # An agent's message only goes live by itself as a category's first one: a category the owner left
+    # without a current message stays that way until someone picks one.
+    first = not _has_messages(s, c.key)
     now = utcnow()
-    t = MessageTemplate(category=category, created_at=now, updated_at=now, **{**fields, "is_current": False})
+    t = MessageTemplate(category=c.key, created_at=now, **{**fields, "is_current": False})
+    _reviewed_by(t, actor)
     s.add(t)
     s.flush()
-    # The first variant in a category is the one in use until another is picked.
-    has_current = s.scalar(select(MessageTemplate.id).where(MessageTemplate.category == category, MessageTemplate.is_current,
+    has_current = s.scalar(select(MessageTemplate.id).where(MessageTemplate.category == c.key, MessageTemplate.is_current,
                                                             MessageTemplate.archived_at.is_(None)))
-    if fields.get("is_current") or not has_current:
+    if fields.get("is_current") or (not has_current and (first or not actor.is_agent)):
         _make_current(s, t)
     return t
 
 
-def update_template(s: Session, template_id: int, data: dict) -> MessageTemplate:
+def update_template(s: Session, actor: Actor, template_id: int, data: dict) -> MessageTemplate:
     t = _template(s, template_id)
     if t.archived_at:
         raise ServiceError("That message is deleted; create a new one instead.")
     if "category" in data and data["category"] != t.category:
         raise ServiceError("A message's category can't change; create a new one in the other category.")
-    fields = _template_fields(data, t.category)
+    fields = _template_fields(_seen_version(t, data), _category(s, t.category))
     current = fields.pop("is_current", None)
-    for k, v in fields.items():
+    if current is False and t.is_current and actor.is_agent:
+        raise ServiceError("Only the owner can leave a category with no current message; make another one current instead.")
+    changed = {k: v for k, v in fields.items() if getattr(t, k) != v}
+    for k, v in changed.items():
         setattr(t, k, v)
-    if current:
+    if current and not t.is_current:
         _make_current(s, t)
-    elif current is False:
+        changed["is_current"] = True
+    elif current is False and t.is_current:
         t.is_current = False
-    t.updated_at = utcnow()
+        changed["is_current"] = False
+    if changed:
+        _reviewed_by(t, actor)
+    elif not actor.is_agent:  # a person saving it unchanged ("looks good") has reviewed it
+        t.needs_review = False
     return t
 
 
 def delete_template(s: Session, template_id: int) -> None:
-    """A variant no live deal points to is removed; one that was sent is archived, so its stats survive."""
+    """A variant nothing live used is removed; one that was sent is archived, so its stats survive."""
     t = _template(s, template_id)
-    if s.scalar(select(func.count()).where(Opportunity.template_id == t.id, Opportunity.archived_at.is_(None))):
-        t.archived_at, t.is_current = utcnow(), False
+    live = Opportunity.archived_at.is_(None)
+    if (s.scalar(select(func.count()).where(Opportunity.template_id == t.id, live))
+            or s.scalar(select(func.count()).select_from(Event).join(Opportunity, Event.opportunity_id == Opportunity.id)
+                        .where(Event.template_id == t.id, live))):
+        t.archived_at, t.is_current, t.needs_review = utcnow(), False, False
     else:
         s.delete(t)
 
@@ -788,6 +981,589 @@ def mark_notifications_read(s: Session, ids: list[int], read: bool = True) -> in
     return len(rows)
 
 
+# ---------------------------------------------------------------- agent state (durable memory for scheduled agents)
+# Rows (ns → section → key), windowed counters, a seen-set and a run log with a lease. Not deal records:
+# no Event and no review flag, or 700 runs a day would bury the Review queue. The owner watches the
+# State page instead; what needs them still goes through notify_owner.
+
+STATE_CAPS = {k: cap for k, _, cap in domain.STATE_SECTIONS}
+STATE_NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,59}")
+MAX_SEEN_IDS = 500
+STATE_PAGE_LIMIT = 2000  # rows on the State page
+EXPIRED_LEASE = "Ended without run_end (lease ran out)"
+IDEM_TTL = timedelta(hours=24)  # how long a count idem key replays its first reply
+MAX_VALUE_DEPTH = 32  # nesting of a JSON value; deeper ones can't be serialized back to readers
+SEEN_DAYS = 90  # default ttl_days of a seen id
+# Nightly purge (app.backup): idle counter windows after 90 days, runs after 60.
+COUNTER_DAYS, RUN_DAYS = 90, 60
+
+
+def _shown(value: Any) -> str:
+    """An input echoed back in an error, cut short so a huge bad value doesn't fill the reply."""
+    r = repr(value)
+    return r if len(r) <= 60 else r[:57] + "..."
+
+
+def _name(field: str, value: Any) -> str:
+    """Namespaces, workers, sections, sources and counter keys are short lowercase names, so
+    "LinkedIn" and "linkedin" can't become two namespaces."""
+    v = value.strip().lower() if isinstance(value, str) else None
+    if not v or not STATE_NAME.fullmatch(v):
+        raise ServiceError(f"{field} must be a short name like 'upwork' or 'linkedin-jobs' "
+                           f"(letters, digits, - _ . up to 60; got {_shown(value)}).")
+    return v
+
+
+def _names(field: str, value: Any, limit: int = 20) -> list[str]:
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else None
+    if items is None or len(items) > limit:
+        raise ServiceError(f"{field} is a name or a list of up to {limit} names.")
+    return list(dict.fromkeys(_name(field, v) for v in items))
+
+
+def _int(field: str, value: Any, lo: int, hi: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        raise ServiceError(f"{field} must be a whole number from {lo:,} to {hi:,} (got {_shown(value)}).")
+    return value
+
+
+def _moment(s: Session, field: str, value: Any, past: bool = False) -> datetime | None:
+    """An ISO time, YYYY-MM-DD, "now", or a duration from now (30m, 12h, 7d; back from now when `past`)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and value.strip().lower() == "now":
+        return utcnow()
+    if isinstance(value, str) and (m := re.fullmatch(r"(\d{1,5})([mhd])", value.strip().lower())):
+        delta = timedelta(**{{"m": "minutes", "h": "hours", "d": "days"}[m.group(2)]: int(m.group(1))})
+        return utcnow() - delta if past else utcnow() + delta
+    error = ServiceError(f"{field}: use an ISO time or YYYY-MM-DD (years 1-9999), now, or a duration like 30m, 12h, 7d "
+                         f"(got {_shown(value)}).")
+    if not isinstance(value, str):
+        raise error
+    try:
+        return parse_when(value, get_timezone(s))
+    except ServiceError:
+        raise error from None
+
+
+def _write_lock(s: Session) -> None:
+    """Take SQLite's write lock now (a no-op UPDATE). MCP tools run in threads, so a read-then-write
+    (a counter, a `max` cursor, a lease) must hold the lock before it reads: then no other request can
+    commit in between, and the reads that follow see the latest data."""
+    s.execute(text("UPDATE agent_runs SET id = id WHERE 0"))
+
+
+def _live_rows(now: datetime):
+    return or_(StateRow.expires_at.is_(None), StateRow.expires_at > now)
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _value_size(value: Any) -> int:
+    """Characters of a value (JSON text for non-strings), refusing what readers couldn't get back:
+    NaN / Infinity aren't JSON, and very deep nesting can't be serialized."""
+    if isinstance(value, str):
+        return len(value)
+    stack = [(value, 1)]
+    while stack:  # iterative: a recursive walk would itself hit Python's recursion limit
+        v, depth = stack.pop()
+        if isinstance(v, dict | list):
+            if depth > MAX_VALUE_DEPTH:
+                raise ServiceError(f"value is nested too deeply (max {MAX_VALUE_DEPTH} levels).")
+            stack.extend((c, depth + 1) for c in (v.values() if isinstance(v, dict) else v))
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
+    except ValueError:
+        raise ServiceError("value can't contain NaN or Infinity.") from None
+
+
+def _iso_time(value: str) -> datetime | None:
+    if not re.match(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _larger(old: Any, new: Any) -> Any:
+    """`max`: numbers compare as numbers, ISO times as times (offsets included), other text as text.
+    Mixed kinds are refused: as text "9" > "10", which would move a cursor backwards."""
+    num = lambda v: isinstance(v, int | float) and not isinstance(v, bool)  # noqa: E731
+    if num(old) and num(new):
+        return new if new > old else old
+    if isinstance(old, str) and isinstance(new, str):
+        a, b = _iso_time(old), _iso_time(new)
+        if a and b:
+            return new if b > a else old
+        return new if new > old else old
+    kind = "a number" if num(old) else "text" if isinstance(old, str) else "neither a number nor text"
+    raise ServiceError(f"max needs the same kind of value as stored ({kind}): numbers, or text such as ISO times.")
+
+
+def state_row_dict(r: StateRow, *, full: bool = True) -> dict:
+    d = {"value": r.value, "by": r.by, "updated_at": iso(r.updated_at)}
+    if r.locked:
+        d["locked"] = True
+    if r.due_at:
+        d["due_at"] = iso(r.due_at)
+    if r.expires_at:
+        d["expires_at"] = iso(r.expires_at)
+    return {"ns": r.ns, "section": r.section, "key": r.key, **d} if full else d
+
+
+def _apply_change(s: Session, actor: Actor, default_ns: str, ch: Any, now: datetime) -> dict:
+    if not isinstance(ch, dict):
+        raise ServiceError("Each change is an object {section, key, value, op, due, expires}.")
+    unknown = set(ch) - {"ns", "section", "key", "value", "op", "due", "expires", "locked"}
+    if unknown:
+        raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    ns = _name("ns", ch["ns"]) if ch.get("ns") is not None else default_ns
+    section = _name("section", ch.get("section"))
+    fixed = section in STATE_CAPS
+    key = ch.get("key").strip() if isinstance(ch.get("key"), str) else ""
+    if not key or len(key) > 200:
+        raise ServiceError("key is text of 1-200 characters.")
+    op = ch.get("op") or "set"
+    if op not in get_args(domain.StateOp):
+        raise ServiceError(f"op must be one of: {', '.join(get_args(domain.StateOp))} (got {op!r}).")
+    has_value = "value" in ch  # omitted on an existing row = keep it (change only due / expires / locked)
+    value = ch.get("value")
+    if "locked" in ch and (actor.is_agent or not isinstance(ch["locked"], bool)):
+        raise ServiceError("Only the owner can lock a row." if actor.is_agent else "locked is true or false.")
+    # due / expires: omitted = unchanged, null = cleared.
+    when = {f: _moment(s, f, ch[f]) for f in ("due", "expires") if f in ch}
+    ref = {"section": section, "key": key, **({"ns": ns} if ns != default_ns else {})}
+
+    row = s.scalar(select(StateRow).where(StateRow.ns == ns, StateRow.section == section, StateRow.key == key))
+    live = row if row and (row.expires_at is None or row.expires_at > now) else None  # an expired row counts as gone
+    if op != "delete" and not has_value and not live:
+        raise ServiceError("value is required for a new row (null deletes a row).")
+    deleting = op == "delete" or (has_value and value is None)
+    if live and live.locked and actor.is_agent:
+        drops = op == "merge" and isinstance(value, dict) and any(v is None for v in value.values())
+        if fixed or op != "merge" or deleting or "expires" in when or drops:
+            raise ServiceError("owner_row: the owner set this row; " + (
+                "agents can only read it." if fixed else "agents may only merge new or updated fields into it (and set due)."))
+    if deleting:
+        if row:
+            s.delete(row)
+        return ref
+    if not has_value:
+        value = live.value
+    elif op == "merge":
+        if not isinstance(value, dict) or (live and not isinstance(live.value, dict)):
+            raise ServiceError("merge needs a JSON object, and the stored value must be one; use op=set.")
+        value = {k: v for k, v in {**(live.value if live else {}), **value}.items() if v is not None}  # null drops a field
+    elif op == "max" and live:
+        value = _larger(live.value, value)
+    limit = domain.FIXED_VALUE_MAX if fixed else domain.LIST_VALUE_MAX
+    if (size := _value_size(value)) > limit:
+        raise ServiceError(f"value is too long ({size:,} characters; max {limit:,} in {'fixed section' if fixed else 'a list'} "
+                           f"{section!r}). Store less{'' if fixed else ' or split it over keys'}.")
+    if not live:
+        cap = STATE_CAPS.get(section, domain.LIST_CAP)
+        used = s.scalar(select(func.count()).where(StateRow.ns == ns, StateRow.section == section, _live_rows(now)))
+        if used >= cap:
+            raise ServiceError(f"Section {section!r} is full ({cap} rows in {ns!r}); delete one first.")
+    keep = lambda f, col: when[f] if f in when else getattr(live, col) if live else None  # noqa: E731
+    fields = {"value": value, "due_at": keep("due", "due_at"), "expires_at": keep("expires", "expires_at"),
+              "locked": ch["locked"] if "locked" in ch else bool(live.locked) if live else not actor.is_agent,
+              # An agent merging into an owner row leaves it the owner's.
+              "by": live.by if live and live.locked and actor.is_agent else _agent_name(actor) if actor.is_agent else "owner",
+              "updated_at": now}
+    if row:
+        for k, v in fields.items():
+            setattr(row, k, v)
+    else:
+        s.add(StateRow(ns=ns, section=section, key=key, **fields))
+    s.flush()  # the next change's cap count sees this row
+    return {**ref, "value": value} if op == "max" and has_value and value != ch.get("value") else ref
+
+
+def _agent_name(actor: Actor) -> str:
+    """`by: owner` means the owner wrote it, so an agent (token) named "owner" can't pass as them."""
+    return f"{actor.name} (agent)" if actor.name.strip().lower() == "owner" else actor.name
+
+
+def state_set(s: Session, actor: Actor, ns: str, changes: Any) -> dict:
+    """Applies each valid change and rejects the rest one by one, with the reason. ops: set replaces;
+    merge shallow-merges into a JSON object (null drops a field); max keeps the larger value, so cursor
+    writes never go backwards; delete (or value null) removes. All under the write lock, so concurrent
+    workers never lose a merge or a cursor advance. Owner (locked) rows: see _apply_change."""
+    ns = _name("ns", ns)
+    if not isinstance(changes, list) or not 1 <= len(changes) <= 100:
+        raise ServiceError("changes is a list of 1-100 {section, key, value, op, due, expires, ns}.")
+    _write_lock(s)
+    now = utcnow()
+    applied, rejected = [], []
+    for ch in changes:
+        try:
+            applied.append(_apply_change(s, actor, ns, ch, now))
+        except ServiceError as e:
+            where = {k: ch[k] for k in ("ns", "section", "key") if isinstance(ch, dict) and isinstance(ch.get(k), str)}
+            rejected.append({**where, "reason": e.message})
+    return {k: v for k, v in {"applied": applied, "rejected": rejected}.items() if v}
+
+
+def state_rows(s: Session, ns: list[str] | None = None, sections: list[str] | None = None, keys: list[str] | None = None,
+               q: str | None = None, due_before: datetime | None = None, limit: int = STATE_PAGE_LIMIT) -> list[StateRow]:
+    """Live rows, ordered ns → section → due_at (earliest first, undated last) → key. A filter list of None
+    means any, an empty list means none. `q` matches a case-insensitive substring of the key or value;
+    `due_before` keeps rows due at or before it."""
+    stmt = select(StateRow).where(_live_rows(utcnow()))
+    if ns is not None:
+        stmt = stmt.where(StateRow.ns.in_(ns))
+    if sections is not None:
+        stmt = stmt.where(StateRow.section.in_(sections))
+    if keys is not None:
+        stmt = stmt.where(StateRow.key.in_(keys))
+    if due_before:
+        stmt = stmt.where(StateRow.due_at <= due_before)
+    if q and q.strip():
+        # casefold() is registered on every connection (app.db); values are stored as JSON text, so the
+        # needle is JSON-escaped too, which finds text with quotes or newlines in it.
+        needle = q.strip().casefold()
+        escaped = json.dumps(needle, ensure_ascii=False)[1:-1]
+        stmt = stmt.where(or_(func.instr(func.casefold(StateRow.key), needle) > 0,
+                              func.instr(func.casefold(type_coerce(StateRow.value, String)), escaped) > 0))
+    order = (StateRow.ns, StateRow.section, StateRow.due_at.asc().nulls_last(), StateRow.key)
+    return list(s.scalars(stmt.order_by(*order).limit(limit)))
+
+
+def _bucket(period: str, now: datetime) -> str:
+    """The current window of a counter, in UTC. Weeks are ISO weeks."""
+    if period == "day":
+        return now.date().isoformat()
+    if period == "week":
+        y, w, _ = now.isocalendar()
+        return f"{y}-W{w:02d}"
+    return now.strftime("%Y-%m") if period == "month" else "all"
+
+
+def _current_counters(s: Session, ns: list[str], now: datetime) -> dict:
+    """{ns: {key: {period: value}}} for the windows in force now."""
+    windows = [and_(StateCounter.period == p, StateCounter.bucket == _bucket(p, now)) for p in get_args(domain.CounterPeriod)]
+    out: dict[str, dict] = {}
+    for c in s.scalars(select(StateCounter).where(StateCounter.ns.in_(ns), or_(*windows)).order_by(StateCounter.key)):
+        out.setdefault(c.ns, {}).setdefault(c.key, {})[c.period] = c.value
+    return out
+
+
+def count(s: Session, items: Any, idem: Any = None) -> dict:
+    """Spend (by > 0), read (by 0) or give back (by < 0, never below 0) counters, all or nothing: if any
+    spend would pass its limit, or any ns in the call has a `stop` row, nothing changes. Limits come from
+    the caller; the server stores no policy. With `idem`, a repeat within 24 hours replays the first
+    successful reply instead of spending again (a refusal spent nothing, so it is never replayed)."""
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise ServiceError("items is a list of 1-20 {ns, key, period, by, limit}.")
+    if idem is not None and (not isinstance(idem, str) or not 0 < len(idem.strip()) <= 200):
+        raise ServiceError("idem is a unique text key per action, up to 200 characters.")
+    periods = get_args(domain.CounterPeriod)
+    parsed = []
+    for it in items:
+        if not isinstance(it, dict) or set(it) - {"ns", "key", "period", "by", "limit"}:
+            raise ServiceError("Each item is {ns, key, period, by, limit}.")
+        period = it.get("period") or "day"
+        if period not in periods:
+            raise ServiceError(f"period must be one of: {', '.join(periods)} (got {period!r}).")
+        limit = it.get("limit")
+        parsed.append((_name("ns", it.get("ns")), _name("key", it.get("key")), period,
+                       _int("by", it.get("by", 1), -100_000, 100_000),
+                       None if limit is None else _int("limit", limit, 0, 10_000_000)))
+    _write_lock(s)
+    now = utcnow()
+    idents = {(ns, key, period, _bucket(period, now)) for ns, key, period, _, _ in parsed}
+    rows = {(c.ns, c.key, c.period, c.bucket): c for c in s.scalars(select(StateCounter).where(
+        or_(*(and_(StateCounter.ns == i[0], StateCounter.key == i[1], StateCounter.period == i[2], StateCounter.bucket == i[3])
+              for i in idents))))}
+    values = {i: rows[i].value if i in rows else 0 for i in idents}
+    start = dict(values)
+    reply = lambda ok_each, extra: {  # noqa: E731
+        "ok": not extra, **extra, "counters": [
+            {"ns": ns, "key": key, "period": period, "value": values[(ns, key, period, _bucket(period, now))], "allowed": ok}
+            for (ns, key, period, _, _), ok in zip(parsed, ok_each, strict=True)]}
+
+    # A halt beats everything, even a replay: the owner or an agent stopped this activity.
+    stops = s.scalars(select(StateRow).where(StateRow.ns.in_({p[0] for p in parsed}), StateRow.section == "stop",
+                                             _live_rows(now)).order_by(StateRow.ns, StateRow.key)).all()
+    if stops:
+        return reply([False] * len(parsed), {"stopped": "; ".join(f"{r.ns} {r.key}: {_text(r.value)}" for r in stops)})
+    # Scoped to this exact call: the same idem with other items (another agent, another cap) is a new call.
+    key = hashlib.sha256(json.dumps([idem.strip(), parsed]).encode()).hexdigest() if idem else None
+    if key and (prev := s.get(IdemKey, key)) and prev.created_at > now - IDEM_TTL:
+        return prev.response
+
+    allowed, refused = [], []
+    for ns, k, period, by, limit in parsed:
+        ident = (ns, k, period, _bucket(period, now))
+        before = values[ident]
+        ok = limit is None or by < 0 or before + max(by, 1) <= limit  # a read (by 0): is there room for one more?
+        allowed.append(ok)
+        if by > 0 and not ok:
+            refused.append(f"{ns} {k} ({period}) is at {before} of {limit}")
+        values[ident] = max(0, before + by)
+    if refused:
+        values = start
+        return reply(allowed, {"refused": "Nothing counted: " + "; ".join(refused) + "."})
+    for ident, v in values.items():
+        if v == start[ident]:
+            continue
+        if ident in rows:
+            rows[ident].value, rows[ident].updated_at = v, now
+        else:
+            s.add(StateCounter(ns=ident[0], key=ident[1], period=ident[2], bucket=ident[3], value=v, updated_at=now))
+    out = reply(allowed, {})
+    if key:
+        s.merge(IdemKey(key=key, response=out, created_at=now))
+    return out
+
+
+def seen(s: Session, ns: str, source: str, ids: Any, mark: bool = True, ttl_days: int = SEEN_DAYS) -> dict:
+    """Which of these item ids weren't seen in ns+source (or their ttl ran out); marks them seen for
+    `ttl_days` unless mark=False."""
+    ns, source = _name("ns", ns), _name("source", source)
+    ttl_days = _int("ttl_days", ttl_days, 1, 3650)
+    if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_SEEN_IDS:
+        raise ServiceError(f"ids is a list of 1-{MAX_SEEN_IDS} item ids.")
+    if any(isinstance(i, bool) or not isinstance(i, str | int) or not str(i).strip() or len(str(i).strip()) > 300 for i in ids):
+        raise ServiceError("Each id is text or a number, up to 300 characters.")
+    given: dict[str, Any] = {}  # repeats in one call count once; ids come back as the caller sent them
+    for i in ids:
+        given.setdefault(str(i).strip(), i if isinstance(i, int) else str(i).strip())
+    uniq = list(given)
+    now = utcnow()
+    if mark:
+        # One statement: a never-seen id is inserted, an expired one renewed, a live one left alone — and
+        # RETURNING lists exactly the first two, even with a concurrent call.
+        expires = now + timedelta(days=ttl_days)
+        stmt = sqlite_insert(SeenItem).values([{"ns": ns, "source": source, "item_id": i, "expires_at": expires} for i in uniq])
+        new = set(s.scalars(stmt.on_conflict_do_update(
+            index_elements=["ns", "source", "item_id"], set_={"expires_at": expires},
+            where=SeenItem.expires_at <= now).returning(SeenItem.item_id)))
+    else:
+        new = set(uniq) - set(s.scalars(select(SeenItem.item_id).where(
+            SeenItem.ns == ns, SeenItem.source == source, SeenItem.item_id.in_(uniq), SeenItem.expires_at > now)))
+    return {"new": [given[i] for i in uniq if i in new]}
+
+
+def _close_expired_runs(s: Session, now: datetime, ns: str | None = None, worker: str | None = None) -> None:
+    """A run that never called run_end ends (as an error) when its lease runs out."""
+    stmt = sql_update(AgentRun).where(AgentRun.ended_at.is_(None), AgentRun.lease_until <= now)
+    if ns is not None:
+        stmt = stmt.where(AgentRun.ns == ns, AgentRun.worker == worker)
+    s.execute(stmt.values(ended_at=AgentRun.lease_until, status="error", summary=EXPIRED_LEASE)
+              .execution_options(synchronize_session=False))
+
+
+def run_dict(r: AgentRun, now: datetime | None = None) -> dict:
+    now = now or utcnow()
+    expired = r.ended_at is None and r.lease_until <= now  # not closed yet: shown as it will be
+    ended = r.lease_until if expired else r.ended_at
+    return {"id": r.id, "ns": r.ns, "worker": r.worker, "started_at": iso(r.started_at), "ended_at": iso(ended),
+            "lease_until": iso(r.lease_until),
+            "status": "error" if expired else r.status or "running",
+            "summary": EXPIRED_LEASE if expired else r.summary, "counts": r.counts or {}}
+
+
+def run_start(s: Session, ns: str, worker: str = "main", also: Any = None, include: Any = None, lease_min: int = 50) -> dict:
+    """Start a run: takes the ns+worker lease (busy=true if a live run holds it) and returns the brief —
+    this ns's fixed sections, list names with row counts, stops from the `also` namespaces, which of those
+    rows are the owner's, current counters of ns and also, this worker's last run, and for each `include`
+    list its rows due now (earliest first, up to 50)."""
+    ns, worker = _name("ns", ns), _name("worker", worker or "main")
+    also = [a for a in _names("also", also or [], limit=10) if a != ns]
+    include = _names("include", include or [], limit=10)
+    if fixed := [x for x in include if x in STATE_CAPS]:
+        raise ServiceError(f"include takes list sections; {', '.join(fixed)} already come in the brief.")
+    lease_min = _int("lease_min", lease_min, 1, 24 * 60)
+    _write_lock(s)  # two run_starts at once: the second waits, then sees the first one's run
+    now = utcnow()
+    _close_expired_runs(s, now, ns, worker)
+    where = (AgentRun.ns == ns, AgentRun.worker == worker)
+    if live := s.scalar(select(AgentRun).where(*where, AgentRun.ended_at.is_(None))):
+        return {"busy": True, "now": iso(now), "started_at": iso(live.started_at), "lease_until": iso(live.lease_until)}
+    last = s.scalar(select(AgentRun).where(*where, AgentRun.ended_at.is_not(None)).order_by(AgentRun.started_at.desc()).limit(1))
+    run = AgentRun(ns=ns, worker=worker, started_at=now, lease_until=now + timedelta(minutes=lease_min))
+    s.add(run)
+    s.flush()
+
+    state: dict[str, dict] = {}
+    stops: dict[str, dict] = {}
+    owner: dict[str, dict] = {}  # ns → section → keys of owner rows in this brief
+    for r in [*state_rows(s, [ns], list(STATE_CAPS)), *state_rows(s, also, ["stop"])]:
+        (state.setdefault(r.section, {}) if r.ns == ns else stops.setdefault(r.ns, {}))[r.key] = r.value
+        if r.locked:
+            owner.setdefault(r.ns, {}).setdefault(r.section, []).append(r.key)
+    lists = dict(s.execute(select(StateRow.section, func.count()).where(
+        StateRow.ns == ns, StateRow.section.not_in(list(STATE_CAPS)), _live_rows(now)).group_by(StateRow.section)).all())
+    due = {x: [{"key": r.key, **state_row_dict(r, full=False)} for r in state_rows(s, [ns], [x], due_before=now, limit=50)]
+           for x in include}
+    brief = {"run_id": run.id, "now": iso(now), "state": state, "owner": owner, "lists": lists, "also": stops,
+             "counters": _current_counters(s, [ns, *also], now),
+             "last": {k: v for k, v in {"status": last.status, "summary": last.summary, "ended_at": iso(last.ended_at)}.items()
+                      if v is not None} if last else None,
+             "include": {x: rows for x, rows in due.items() if rows}}
+    return {k: v for k, v in brief.items() if v}
+
+
+def _summary_line(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ServiceError("summary is one line of text.")
+    line = " ".join(value.split())  # one line
+    if len(line) > 500:
+        raise ServiceError("summary is too long (max 500 characters) — one line saying what happened.")
+    return line or None
+
+
+def _counts(value: Any) -> dict | None:
+    if value is None:
+        return None
+    ok = isinstance(value, dict) and len(value) <= 30 and all(
+        isinstance(k, str) and 0 < len(k) <= 40 and isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+        for k, v in value.items())
+    if not ok:
+        raise ServiceError('counts is an object of up to 30 numbers, e.g. {"applied": 3, "skipped": 12}.')
+    return value or None
+
+
+def run_end(s: Session, actor: Actor, run_id: Any, status: str, summary: Any = None, counts: Any = None,
+            changes: Any = None) -> dict:
+    """End a run: record how it went, apply its state changes (as state_set on the run's ns) and free the
+    lease. Idempotent per run: a repeat call (a retry after a timeout) returns the first reply and applies
+    nothing. A run closed because its lease ran out can still be ended once with its real outcome."""
+    missing = ServiceError(f"Run {_shown(run_id)} not found — pass the run_id run_start returned.", 404)
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or not 0 < run_id < 2**63:
+        raise missing
+    if status not in {k for k, _ in domain.RUN_STATUSES}:
+        raise ServiceError(f"status must be one of: {', '.join(k for k, _ in domain.RUN_STATUSES)} (got {status!r}).")
+    summary, counts = _summary_line(summary), _counts(counts)
+    _write_lock(s)  # read the run under the lock: a concurrent repeat may have just ended it
+    if not (run := s.get(AgentRun, run_id)):
+        raise missing
+    if run.result is not None:
+        return run.result
+    result = {"run_id": run.id, "ended": True, **(state_set(s, actor, run.ns, changes) if changes else {})}
+    run.ended_at, run.status, run.summary, run.counts, run.result = utcnow(), status, summary, counts, result
+    return result
+
+
+def runs(s: Session, *, ns: str | None = None, statuses: list[str] | None = None, limit: int = 100) -> list[dict]:
+    """Newest first, for the Runs list. `statuses` may include "running"."""
+    now = utcnow()
+    stmt = select(AgentRun).order_by(AgentRun.id.desc()).limit(max(1, min(limit, 500)))
+    if ns:
+        stmt = stmt.where(AgentRun.ns == ns.strip().lower())
+    if statuses:
+        live, lapsed = and_(AgentRun.ended_at.is_(None), AgentRun.lease_until > now), and_(AgentRun.ended_at.is_(None), AgentRun.lease_until <= now)
+        match = [AgentRun.status.in_(statuses)]
+        if "running" in statuses:
+            match.append(live)
+        if "error" in statuses:  # a run whose lease ran out shows as an error before anyone closes it
+            match.append(lapsed)
+        stmt = stmt.where(or_(*match))
+    return [run_dict(r, now) for r in s.scalars(stmt)]
+
+
+def run_digest(s: Session, since: datetime, ns: list[str] | None = None) -> dict:
+    """Per ns → worker: how many runs, how many per status, summed counts, and the latest 20 summaries
+    of runs that weren't quiet (never the raw run list)."""
+    stmt = select(AgentRun).where(AgentRun.started_at >= since).order_by(AgentRun.started_at)
+    if ns:
+        stmt = stmt.where(AgentRun.ns.in_(ns))
+    now = utcnow()
+    out: dict[str, dict] = {}
+    for r in s.scalars(stmt):
+        d = run_dict(r, now)
+        g = out.setdefault(r.ns, {}).setdefault(r.worker, {"runs": 0, "status": {}, "counts": {}, "notes": []})
+        g["runs"] += 1
+        g["status"][d["status"]] = g["status"].get(d["status"], 0) + 1
+        for k, v in d["counts"].items():
+            g["counts"][k] = g["counts"].get(k, 0) + v
+        if d["status"] != "quiet" and d["summary"]:
+            g["notes"].append({"at": d["started_at"], "status": d["status"], "summary": d["summary"]})
+    for workers in out.values():
+        for g in workers.values():
+            g["notes"] = g["notes"][-20:]
+            for k in ("counts", "notes"):
+                if not g[k]:
+                    del g[k]
+    return out
+
+
+def state_get(s: Session, ns: Any, sections: Any = None, keys: Any = None, q: str | None = None,
+              due_before: Any = None, limit: Any = 100, runs_since: Any = None) -> dict:
+    """Rows grouped ns → section → key (ns may be a name, a list, or "*" for all), each section's rows
+    earliest due first. With runs_since, a run digest too; then rows come back only if sections, keys, q
+    or due_before were also given."""
+    nss = None if ns == "*" else _names("ns", ns)
+    sections = _names("sections", sections, limit=50) if sections is not None else None
+    if keys is not None and (not isinstance(keys, list) or len(keys) > 500 or not all(isinstance(k, str) for k in keys)):
+        raise ServiceError("keys is a list of up to 500 keys.")
+    keys = [k.strip() for k in keys] if keys is not None else None  # stored keys are stripped
+    if q is not None and not isinstance(q, str):
+        raise ServiceError("q is text.")
+    limit = _int("limit", limit, 1, 500)
+    due = _moment(s, "due_before", due_before)
+    since = _moment(s, "runs_since", runs_since, past=True)
+    out: dict[str, Any] = {}
+    if since is None or sections is not None or keys is not None or due or (q and q.strip()):
+        rows = state_rows(s, nss, sections, keys, q, due, limit=limit + 1)
+        grouped: dict[str, dict] = {}
+        for r in rows[:limit]:
+            grouped.setdefault(r.ns, {}).setdefault(r.section, {})[r.key] = state_row_dict(r, full=False)
+        out["state"] = grouped
+        if len(rows) > limit:
+            out["more"] = True  # raise limit (max 500) or narrow with sections, keys, q or due_before
+    if since is not None:
+        out["runs"] = run_digest(s, since, nss)
+    return out
+
+
+def state_page(s: Session, ns: str | None = None, section: str | None = None, q: str | None = None,
+               limit: int = STATE_PAGE_LIMIT) -> dict:
+    """The State page: rows (flat, ns → section order), `more` when cut at `limit`, plus the overview."""
+    limit = _int("limit", limit, 0, STATE_PAGE_LIMIT)
+    rows = state_rows(s, [_name("ns", ns)] if ns else None, [_name("section", section)] if section else None,
+                      q=q, limit=limit + 1) if limit else []
+    return {"rows": [state_row_dict(r) for r in rows[:limit]], "more": len(rows) > limit, **state_overview(s)}
+
+
+def state_overview(s: Session) -> dict:
+    """For the State page's filters: every namespace with rows or runs, the sections in use, and the
+    current counters."""
+    now = utcnow()
+    namespaces = sorted(set(s.scalars(select(StateRow.ns).where(_live_rows(now)).distinct()))
+                        | set(s.scalars(select(AgentRun.ns).distinct()))
+                        | set(s.scalars(select(StateCounter.ns).distinct())))
+    used = set(s.scalars(select(StateRow.section).where(_live_rows(now)).distinct()))
+    return {"namespaces": namespaces, "sections": [*STATE_CAPS, *sorted(used - set(STATE_CAPS))],
+            "counters": _current_counters(s, namespaces, now)}
+
+
+def forget_namespace(s: Session, ns: str) -> int:
+    """The owner retires an agent: its rows, counters, seen ids and runs all go. Returns rows deleted."""
+    ns = _name("ns", ns)
+    return sum(s.execute(sql_delete(m).where(m.ns == ns)).rowcount for m in (StateRow, StateCounter, SeenItem, AgentRun))
+
+
+def purge_state(s: Session) -> None:
+    """Nightly: drop expired rows, seen ids and idem keys, idle counter windows and old runs; close crashed runs."""
+    now = utcnow()
+    _close_expired_runs(s, now)
+    s.execute(sql_delete(StateRow).where(StateRow.expires_at <= now))
+    s.execute(sql_delete(SeenItem).where(SeenItem.expires_at <= now))
+    s.execute(sql_delete(IdemKey).where(IdemKey.created_at <= now - IDEM_TTL))
+    s.execute(sql_delete(StateCounter).where(StateCounter.period != "total",
+                                             StateCounter.updated_at < now - timedelta(days=COUNTER_DAYS)))
+    s.execute(sql_delete(AgentRun).where(AgentRun.ended_at.is_not(None), AgentRun.started_at < now - timedelta(days=RUN_DAYS)))
+
+
 # ---------------------------------------------------------------- agenda / insights
 
 def agenda(s: Session) -> dict:
@@ -837,6 +1613,8 @@ def agenda(s: Session) -> dict:
         "upcoming": [rem(r, o) for r, o in upcoming],
         "needs_review": s.scalar(select(func.count()).where(Opportunity.needs_review.is_(True), active)) or 0,
         "unread_notifications": s.scalar(select(func.count()).where(Notification.read_at.is_(None))) or 0,
+        "messages_need_review": sum(s.scalar(select(func.count()).where(m.needs_review.is_(True), m.archived_at.is_(None))) or 0
+                                    for m in (MessageCategory, MessageTemplate)),
     }
 
 
@@ -897,12 +1675,19 @@ def stats(s: Session, days: int | None = 90) -> dict:
         return sorted(rows, key=lambda r: -r["applied"])
 
     variants = {t.id: t for t in s.scalars(select(MessageTemplate))}
+    category_names = {c.key: c.name for c in s.scalars(select(MessageCategory))}
 
     def variant_label(tid: int) -> str:
         t = variants.get(tid)
         if not t:
             return f"#{tid}"
-        return f"{domain.label(domain.TEMPLATE_CATEGORIES, t.category)} · {t.name}" + (" (deleted)" if t.archived_at else "")
+        return f"{category_names.get(t.category, t.category)} · {t.name}" + (" (deleted)" if t.archived_at else "")
+
+    # How often each template was used in the window, per platform it went out on.
+    usage: dict[int, dict[str, int]] = {}
+    for tid, ch, _ in _uses(s, since if days else None):
+        usage.setdefault(tid, {})
+        usage[tid][ch or "other"] = usage[tid].get(ch or "other", 0) + 1
 
     open_opps = [o for o in all_opps if o.stage in domain.OPEN_STAGES]
     return {
@@ -913,6 +1698,12 @@ def stats(s: Session, days: int | None = 90) -> dict:
         "by_kind": grouped("kind", domain.KINDS),
         "by_template": by_value(lambda o: o.template_id, variant_label),
         "by_resume_version": by_value(lambda o: o.resume_version, str),
+        "template_usage": sorted(
+            ({"key": str(tid), "label": variant_label(tid), "category": variants[tid].category if tid in variants else None,
+              "uses": sum(chs.values()),
+              "by_channel": [{"key": k, "label": lbl, "count": chs[k]} for k, lbl in domain.CHANNELS if chs.get(k)]}
+             for tid, chs in usage.items()),
+            key=lambda r: -r["uses"]),
         # Every deal that died in the window, including leads you passed on — not just the applied cohort.
         "lost_reasons": [{"key": k, "label": lbl, "count": n} for k, lbl in domain.LOST_REASONS
                          if (n := sum(1 for o in all_opps if o.stage == "lost" and o.lost_reason == k

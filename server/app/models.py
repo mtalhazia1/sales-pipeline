@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base, utcnow
@@ -114,21 +115,43 @@ class Opportunity(Base):
     __table_args__ = (Index("ix_opp_stage", "stage"), Index("ix_opp_activity", "last_activity_at"))
 
 
+class MessageCategory(Base):
+    """A kind of recurring message (LinkedIn first contact, cold email, ...). `purpose` tells
+    agents when to send it. Created by the owner or, on their behalf, by an agent. A category whose
+    messages have history is archived, not deleted, so Insights can still name them."""
+
+    __tablename__ = "message_categories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(40), unique=True)  # what agents pass; never changes
+    name: Mapped[str] = mapped_column(String(120))
+    purpose: Mapped[str | None] = mapped_column(Text)
+    has_subject: Mapped[bool] = mapped_column(Boolean, default=False)  # emails
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class MessageTemplate(Base):
-    """A first-contact message variant (LinkedIn, cold or warm email). One per category is current —
-    that is the one agents send. A variant that deals point to is archived, not deleted, so its
-    reply-rate history survives."""
+    """The owner's recommended example of a message in a category. One per category is current — that is
+    the one agents adapt and send. A variant that was used is archived, not deleted, so its usage history survives."""
 
     __tablename__ = "message_templates"
     id: Mapped[int] = mapped_column(primary_key=True)
-    category: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)  # MessageCategory.key
     name: Mapped[str] = mapped_column(String(120))
     subject: Mapped[str | None] = mapped_column(String(300))  # emails only
     body: Mapped[str] = mapped_column(Text)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Agents keep template ids; AUTOINCREMENT stops SQLite handing a removed message's id to a new one.
+    __table_args__ = {"sqlite_autoincrement": True}
 
 
 class Reminder(Base):
@@ -155,8 +178,12 @@ class Event(Base):
     changes: Mapped[dict | None] = mapped_column(JSON)  # {field: [old, new]}
     actor_type: Mapped[str] = mapped_column(String(10))  # human | agent
     actor_name: Mapped[str] = mapped_column(String(120))
+    # my_message only: the platform it went out on, and the template it was based on (usage telemetry).
+    channel: Mapped[str | None] = mapped_column(String(20))
+    template_id: Mapped[int | None] = mapped_column(ForeignKey("message_templates.id", ondelete="SET NULL"), index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    template: Mapped["MessageTemplate | None"] = relationship(lazy="joined")
 
 
 class Notification(Base):
@@ -173,6 +200,87 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     opportunity: Mapped[Opportunity | None] = relationship(lazy="joined")
+
+
+# ---------------------------------------------------------------- agent state
+# Durable memory for scheduled agents, so they keep nothing in local files between runs. `ns` (namespace)
+# is an agent's name ("upwork") or one several agents share ("linkedin"). Not deal records: no Event and
+# no review flag — the owner watches it on the State page.
+
+
+class StateRow(Base):
+    """One remembered value. `section` is a fixed brief section (domain.STATE_SECTIONS) or a list name.
+    `locked` = an owner row: agents can't change it (in a list they may only merge fields into it)."""
+
+    __tablename__ = "agent_state"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ns: Mapped[str] = mapped_column(String(60))
+    section: Mapped[str] = mapped_column(String(60))
+    key: Mapped[str] = mapped_column(String(200))
+    value: Mapped[Any] = mapped_column(JSON)  # any JSON: text, number, object, list
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    by: Mapped[str] = mapped_column(String(120))  # agent name, or "owner"
+    due_at: Mapped[datetime | None] = mapped_column(DateTime)  # list rows worked on a schedule
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (UniqueConstraint("ns", "section", "key"), Index("ix_agent_state_due", "ns", "section", "due_at"))
+
+
+class StateCounter(Base):
+    """A usage count in one time window (bucket): day 2026-10-18, week 2026-W42, month 2026-10, total all.
+    A new window is a new row starting at zero, so nobody ever resets a counter."""
+
+    __tablename__ = "agent_counters"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ns: Mapped[str] = mapped_column(String(60))
+    key: Mapped[str] = mapped_column(String(60))
+    period: Mapped[str] = mapped_column(String(10))
+    bucket: Mapped[str] = mapped_column(String(10))
+    value: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    __table_args__ = (UniqueConstraint("ns", "key", "period", "bucket"),)
+
+
+class SeenItem(Base):
+    """An item an agent already evaluated (a job id, a comment id, a URL), so later runs skip it until
+    `expires_at` (the caller's ttl_days); after that it counts as new again."""
+
+    __tablename__ = "agent_seen"
+    ns: Mapped[str] = mapped_column(String(60), primary_key=True)
+    source: Mapped[str] = mapped_column(String(60), primary_key=True)
+    item_id: Mapped[str] = mapped_column(String(300), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class AgentRun(Base):
+    """One scheduled run of a worker in a namespace. While `ended_at` is empty and `lease_until` is in the
+    future the run holds its ns+worker, so runs never overlap; a crashed run frees it at `lease_until`."""
+
+    __tablename__ = "agent_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ns: Mapped[str] = mapped_column(String(60))
+    worker: Mapped[str] = mapped_column(String(60))
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    lease_until: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str | None] = mapped_column(String(10))  # domain.RUN_STATUSES; empty while running
+    summary: Mapped[str | None] = mapped_column(String(500))
+    counts: Mapped[dict | None] = mapped_column(JSON)  # {"applied": 3, "skipped": 12}
+    result: Mapped[dict | None] = mapped_column(JSON)  # run_end's first reply; a repeat call returns it
+
+    __table_args__ = (Index("ix_agent_runs_ns_worker", "ns", "worker", "started_at"),)
+
+
+class IdemKey(Base):
+    """A `count` call's idempotency key and its reply, so a retry after a timeout doesn't spend twice.
+    Honoured for 24 hours, then purged nightly."""
+
+    __tablename__ = "agent_idem"
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    response: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class Setting(Base):

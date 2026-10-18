@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { BarChart3, Bell, Bot, CalendarCheck, Columns3, MessagesSquare, Moon, Plus, Search, Settings } from "lucide-react";
+import { BarChart3, Bell, Bot, CalendarCheck, Columns3, Database, MessagesSquare, Moon, Plus, Search, Settings } from "lucide-react";
 import { useDrawer, useOpportunities } from "../lib/hooks";
 import { StagePill, cx } from "./ui";
 import { toggleTheme } from "./theme";
@@ -29,8 +29,9 @@ export function CommandPalette({ open, onClose, onNew }: { open: boolean; onClos
       { key: "alerts", label: "Alerts from agents", icon: <Bell size={15} />, hint: "G A", run: go("/alerts"), text: "alerts notifications inbox" },
       { key: "pipe", label: "Pipeline", icon: <Columns3 size={15} />, hint: "G P", run: go("/pipeline"), text: "pipeline board list" },
       { key: "rev", label: "Review agent changes", icon: <Bot size={15} />, hint: "G R", run: go("/review"), text: "review agents activity" },
-      { key: "msg", label: "Outreach messages", icon: <MessagesSquare size={15} />, hint: "G M", run: go("/messages"), text: "messages templates outreach linkedin email cold warm" },
+      { key: "msg", label: "Messages", icon: <MessagesSquare size={15} />, hint: "G M", run: go("/messages"), text: "messages templates outreach linkedin email cold warm" },
       { key: "ins", label: "Insights", icon: <BarChart3 size={15} />, hint: "G I", run: go("/insights"), text: "insights stats analytics" },
+      { key: "state", label: "Agent state & runs", icon: <Database size={15} />, hint: "G D", run: go("/state"), text: "state memory runs agents cursors counters" },
       { key: "set", label: "Settings & agent access", icon: <Settings size={15} />, hint: "G S", run: go("/settings"), text: "settings api keys mcp connect" },
       { key: "theme", label: "Toggle dark mode", icon: <Moon size={15} />, run: toggleTheme, text: "theme dark light" },
     ];

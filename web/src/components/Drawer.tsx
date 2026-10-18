@@ -6,7 +6,7 @@ import {
 import { ApiError, type Detail, type Option, type TimelineEvent } from "../lib/api";
 import { ago, due, hostOf, href, inDays, money, nextMonday, parseMoney, snoozed } from "../lib/format";
 import { labelOf, useMeta } from "../lib/meta";
-import { useDrawer, useOppActions, useOpportunity, useTemplates } from "../lib/hooks";
+import { useDrawer, useOppActions, useOpportunity, useTemplateCategories, useTemplates } from "../lib/hooks";
 import { Button, Fit, Modal, Segmented, Select, Spinner, StagePill, YourMove, cx, useToast } from "./ui";
 import { DUE_TONE } from "./OppRow";
 import { useConfirm } from "./confirm";
@@ -260,12 +260,13 @@ function DrawerBody({ opp }: { opp: Detail }) {
 
 /** What was sent: the first-contact message variant and, for job applications, the tailored documents. */
 function Outreach({ opp, save }: { opp: Detail; save: (patch: Record<string, unknown>, revert?: () => void) => void }) {
-  const { data: meta } = useMeta();
   const { data: templates } = useTemplates(true);
+  const { data: categories } = useTemplateCategories(true);
   const job = opp.kind === "job";
+  const catName = (key: string) => categories?.find((c) => c.key === key)?.name ?? key;
   const options = (templates ?? [])
     .filter((t) => !t.archived || t.id === opp.template?.id)
-    .map((t) => ({ value: String(t.id), label: `${labelOf(meta?.template_categories, t.category)} · ${t.name}${t.archived ? " (deleted)" : ""}` }));
+    .map((t) => ({ value: String(t.id), label: `${catName(t.category)} · ${t.name}${t.archived ? " (deleted)" : ""}` }));
   // Until the list loads (or if it fails) still show the variant this deal has, not "none".
   if (opp.template && !options.some((o) => o.value === String(opp.template!.id)))
     options.unshift({ value: String(opp.template.id), label: opp.template.name });
@@ -591,7 +592,7 @@ export function eventTitle(e: TimelineEvent, labels: (field: string, v: unknown)
     case "client_message":
       return "Client messaged";
     case "my_message": {
-      const variant = e.changes?.first_message?.[1];
+      const variant = e.template?.name ?? e.changes?.first_message?.[1];
       return variant ? <>Sent a message <span className="text-muted">· template “{String(variant)}”</span></> : "Sent a message";
     }
     case "call":

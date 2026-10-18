@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
-import { BarChart3, Bell, Bot, CalendarCheck, Columns3, MessagesSquare, Moon, Plus, Search, Settings, Sun } from "lucide-react";
+import { BarChart3, Bell, Bot, CalendarCheck, Columns3, Database, MessagesSquare, Moon, Plus, Search, Settings, Sun } from "lucide-react";
 import { useAgenda } from "../lib/hooks";
 import { CommandPalette } from "./CommandPalette";
 import { Drawer } from "./Drawer";
@@ -19,8 +19,9 @@ export function Shell() {
   const todayCount = agenda ? agenda.due_reminders.length + agenda.your_move.length : 0;
   const reviewCount = agenda?.needs_review ?? 0;
   const alertCount = agenda?.unread_notifications ?? 0;
+  const messagesReview = agenda?.messages_need_review ?? 0;
 
-  // Keyboard: ⌘K / "/" search · N new · G then T/A/P/R/M/I/S to navigate
+  // Keyboard: ⌘K / "/" search · N new · G then T/A/P/R/M/I/D/S to navigate
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest?.("input,textarea,select,[contenteditable]");
@@ -34,7 +35,7 @@ export function Shell() {
       const k = e.key.toLowerCase();
       if (pendingG.current) {
         pendingG.current = false;
-        const dest = { t: "/", a: "/alerts", p: "/pipeline", r: "/review", m: "/messages", i: "/insights", s: "/settings" }[k];
+        const dest = { t: "/", a: "/alerts", p: "/pipeline", r: "/review", m: "/messages", i: "/insights", d: "/state", s: "/settings" }[k];
         if (dest) nav(dest);
         return;
       }
@@ -58,8 +59,9 @@ export function Shell() {
     { to: "/alerts", label: "Alerts", icon: <Bell size={18} />, badge: alertCount, tone: "bg-rose-500 text-white" },
     { to: "/pipeline", label: "Pipeline", icon: <Columns3 size={18} /> },
     { to: "/review", label: "Review", icon: <Bot size={18} />, badge: reviewCount, tone: "bg-accent text-accent-fg" },
-    { to: "/messages", label: "Messages", icon: <MessagesSquare size={18} /> },
+    { to: "/messages", label: "Messages", icon: <MessagesSquare size={18} />, badge: messagesReview, tone: "bg-accent text-accent-fg" },
     { to: "/insights", label: "Insights", icon: <BarChart3 size={18} /> },
+    { to: "/state", label: "State", icon: <Database size={18} /> },
     { to: "/settings", label: "Settings", icon: <Settings size={18} /> },
   ];
 
@@ -140,16 +142,17 @@ export function Shell() {
       </main>
 
       {/* mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-7 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-8 border-t border-line bg-panel/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
         {items.map((i) => (
           <NavLink
             key={i.to}
             to={i.to}
             end={i.to === "/"}
-            className={({ isActive }) => cx("relative flex flex-col items-center gap-0.5 py-2 text-[10px] font-medium", isActive ? "text-accent" : "text-muted")}
+            className={({ isActive }) => cx("relative flex min-w-0 flex-col items-center gap-0.5 py-2 text-[10px] font-medium", isActive ? "text-accent" : "text-muted")}
           >
             {i.icon}
-            {i.label}
+            {/* 8 tabs: on a narrow phone a long label is cut rather than running into its neighbour */}
+            <span className="max-w-full truncate px-0.5">{i.label}</span>
             {!!i.badge && <span className={cx("absolute top-1 left-[calc(50%+6px)] rounded-full px-1 text-[10px] font-semibold", i.tone)}>{i.badge}</span>}
           </NavLink>
         ))}

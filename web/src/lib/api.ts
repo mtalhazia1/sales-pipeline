@@ -10,9 +10,10 @@ export type Meta = {
   open_stages: string[];
   lost_reasons: Option[];
   activity_kinds: Option[];
-  template_categories: Option[];
-  email_categories: string[];
   channel_by_host: Record<string, string>;
+  /** Agent state: fixed sections (in every run_start brief, capped); any other section is a list. */
+  state_sections: (Option & { cap: number })[];
+  run_statuses: Option[];
   timezone: string;
   timezone_set: boolean;
   base_url: string;
@@ -65,6 +66,9 @@ export type TimelineEvent = {
   actor_type: "human" | "agent";
   actor_name: string;
   occurred_at: string;
+  /** my_message only: the platform it went out on, and the template it used. */
+  channel: string | null;
+  template: TemplateRef | null;
   company?: string;
   title?: string | null;
 };
@@ -89,20 +93,44 @@ export type Detail = Summary & {
 
 export type TemplateRef = { id: number; category: string; name: string };
 
-/** A first-contact message variant; agents send the category's current one. */
+/** A kind of recurring message (LinkedIn first contact, cold email, …); `purpose` tells agents when to send it. */
+export type MessageCategory = {
+  key: string;
+  name: string;
+  purpose: string | null;
+  has_subject: boolean;
+  needs_review: boolean;
+  updated_by: string | null;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/** The owner's recommended example; agents adapt the category's current one to each person. */
 export type MessageTemplate = TemplateRef & {
   subject: string | null;
   body: string;
   placeholders: string[];
   is_current: boolean;
   archived: boolean;
+  needs_review: boolean;
+  updated_by: string | null;
   created_at: string;
   updated_at: string;
 };
 
-/** GET /templates adds how each variant did (all time, sent outbound deals). */
+/** GET /templates adds usage (all time): every send per platform, and how deals did with it as their first message. */
 export type TemplateWithUsage = MessageTemplate & {
-  usage: { sent: number; replied: number; calls: number; won: number; reply_rate: number | null };
+  usage: {
+    uses: number;
+    by_channel: Record<string, number>;
+    last_used_at: string | null;
+    sent: number;
+    replied: number;
+    calls: number;
+    won: number;
+    reply_rate: number | null;
+  };
 };
 
 export type AgendaReminder = Reminder & { overdue: boolean; opportunity: Summary };
@@ -118,6 +146,7 @@ export type Agenda = {
   upcoming: AgendaReminder[];
   needs_review: number;
   unread_notifications: number;
+  messages_need_review: number;
 };
 
 /** An alert an agent sent the owner (MCP notify_owner). */
@@ -153,6 +182,7 @@ export type Stats = {
   by_kind: (Funnel & { key: string; label: string })[];
   by_template: (Funnel & { key: string; label: string })[];
   by_resume_version: (Funnel & { key: string; label: string })[];
+  template_usage: { key: string; label: string; category: string | null; uses: number; by_channel: { key: string; label: string; count: number }[] }[];
   lost_reasons: { key: string; label: string; count: number }[];
   open_by_stage: { stage: string; label: string; count: number; value: number }[];
   weekly: { week: string; applied: number; replies: number; won: number }[];
@@ -162,6 +192,48 @@ export type Agents = {
   mcp_url: string;
   api_keys: { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null }[];
   apps: { client_id: string; name: string; connected_at: string; last_used_at: string | null }[];
+};
+
+/** Agent state: one remembered value. `locked` = an owner row: agents can't change it (in a list they may only merge fields). */
+export type StateRow = {
+  ns: string;
+  section: string;
+  key: string;
+  value: unknown;
+  by: string;
+  updated_at: string;
+  locked?: boolean;
+  /** List rows worked on a schedule. */
+  due_at?: string;
+  expires_at?: string;
+};
+
+/** GET /state: rows (filtered) plus what the filters offer, and counters in their current windows {ns: {key: {period: n}}}. */
+export type StateView = {
+  rows: StateRow[];
+  /** True when rows were cut at the page limit (2,000): narrow the filters. */
+  more: boolean;
+  namespaces: string[];
+  sections: string[];
+  counters: Record<string, Record<string, Record<string, number>>>;
+};
+
+export type StateChangeResult = {
+  applied?: { section: string; key: string; ns?: string; value?: unknown }[];
+  rejected?: { section?: string; key?: string; ns?: string; reason: string }[];
+};
+
+/** One scheduled agent run; status is "running" while it holds its lease. */
+export type AgentRun = {
+  id: number;
+  ns: string;
+  worker: string;
+  started_at: string;
+  ended_at: string | null;
+  lease_until: string;
+  status: string;
+  summary: string | null;
+  counts: Record<string, number>;
 };
 
 export type User = { id: number; email: string; name: string };

@@ -1,7 +1,7 @@
 """Daily consistent snapshot of the SQLite database (safe while the app is writing — uses SQLite's
 online backup API). Keeps the last 14. The EBS volume snapshots then carry these off-box.
 Also clears out dead auth rows (expired sessions/tokens/codes, OAuth clients that never connected)
-so anonymous registration and long use can't grow the database forever.
+and stale agent state, so anonymous registration and long use can't grow the database forever.
 
     python -m app.backup"""
 
@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, exists, or_, select
 
-from app import config
+from app import config, service
 from app.db import session_scope, utcnow
 from app.models import AgentToken, OAuthClient, OAuthCode, WebSession
 
@@ -28,6 +28,7 @@ def purge() -> None:
         s.execute(delete(OAuthClient).where(
             OAuthClient.created_at < now - timedelta(days=1),
             ~exists(select(AgentToken.id).where(AgentToken.client_id == OAuthClient.client_id))))
+        service.purge_state(s)  # expired agent state rows, old seen ids / counter windows / runs
 
 
 def main() -> None:

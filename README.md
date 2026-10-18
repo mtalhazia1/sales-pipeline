@@ -2,8 +2,8 @@
 
 Agents find and log the work (jobs, projects, messages, follow-ups); a human reviews and steers.
 
-- **Web UI** — Today (what needs you), Alerts (what agents flagged for you to act on), Pipeline (board + list), Review (what agents changed), Insights (funnel by channel/network), Settings (connect agents).
-- **MCP server** at `/mcp` (protocol 2026-07-28, older clients still served) — 10 tools, OAuth for Claude apps, API keys for headless agents.
+- **Web UI** — Today (what needs you), Alerts (what agents flagged for you to act on), Pipeline (board + list), Review (what agents changed), Messages (example messages agents adapt and send), Insights (funnel by channel/network), State (what scheduled agents remember between runs, and their run log), Settings (connect agents).
+- **MCP server** at `/mcp` (protocol 2026-07-28, older clients still served) — 20 tools, OAuth for Claude apps, API keys for headless agents.
 - **REST API** at `/api` — what the UI uses; API keys work here too.
 
 One process (FastAPI + MCP SDK 2.3), one SQLite file, one port.
@@ -41,7 +41,8 @@ cd ../web && npm install && npm run dev                                   # http
 ```
 
 Checks: `cd web && npx tsc -b && npm run build` · `python server/scripts/smoke.py http://localhost:8100 EMAIL PASSWORD`
-(end-to-end: REST, every MCP flow on both protocol eras, full OAuth connect/refresh/revoke; cleans up after itself).
+(end-to-end: REST, every MCP flow on both protocol eras, full OAuth connect/refresh/revoke; cleans up after itself)
+· `python server/scripts/state_test.py` (agent-state rules on a throwaway DB: concurrent counters, leases, locks, caps).
 Demo data for a local DB: `python server/scripts/seed_demo.py`.
 
 Schema change: edit `server/app/models.py`, then `cd server && ../.venv/bin/alembic revision --autogenerate -m "…"`.

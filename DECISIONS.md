@@ -147,3 +147,143 @@ Judgment calls (overrule any of them):
 - A deleted (archived) variant can't be newly assigned to a deal. A deal keeps the one it already has.
 - "Sent" on the Messages page counts only deals that were actually sent (applied), matching Insights.
 - Search / add / update results now include `template_id` and the doc links, so an agent can see what was already sent.
+
+## Message categories as data + template usage telemetry — 2026-10-15
+
+Ask: agents (via MCP) and the owner (in the UI) can create categories of fixed text and messages inside them, and
+record how often each message is used on each platform, with a graph.
+
+- **Categories are data now**, not `domain.py` vocabulary: a `message_categories` table with a name, a **purpose**
+  (when agents should send it; this is the rule they follow) and a "has a subject line" flag. The three old categories
+  are seeded with the same keys (`linkedin`, `cold_email`, `warm_email`), so existing agent calls keep working.
+  The warm/cold and first-contact rules moved out of the MCP instructions into their purposes, so you can edit them.
+- A category's **key** is derived from its name once and never changes; renaming keeps it, because agents use it.
+  Whether a category's messages have a subject can only change while it has no messages.
+- **Agents can create and edit** categories and messages (`save_message_category`, `save_message_template`), and
+  can make a message current. They can't delete. This overrules "only people can write templates". What an agent
+  writes is **flagged for review**, the same rule as deals: a chip on the Messages page and a badge on the nav.
+  "Looks good", or any save by you, clears it. An agent's first message in a new category goes live (becomes
+  current) at once, because that's what you'd be asking for. Agents write through MCP only; REST stays human-only.
+- **Usage = logged sends.** Every `my_message` now records the platform it went out on (the deal's channel, or
+  `channel` when the agent sent it elsewhere) and, with `template_id`, the template it used. Counts come from
+  those timeline events, with no separate counter to drift. Deleted deals don't count, as everywhere else.
+  Existing history was backfilled: each deal's recorded first message is credited to its earliest sent message.
+- **A deal can use several templates now.** The old "one template per deal" refusal is gone. The deal's *first
+  message* (which the reply-rate comparison uses) is the first template sent before the client ever replied. Later
+  ones (a rate card, a follow-up category) are counted as uses but never re-credit the reply.
+- Insights: **"Message templates sent"**, stacked bars per message coloured by platform, with a table view.
+  It uses the page's time window. Each message card shows "Used N× · per platform" plus its first-message results.
+  `pipeline_stats` returns the same data as `template_usage`.
+- An empty category can be deleted. One that has messages can't (delete them first). One whose deleted messages
+  still have history is archived, not removed, so Insights can still name them.
+- The smoke test now uses its own throwaway categories, so it never adds variants next to the real messages
+  agents send.
+
+## Agent State module — 2026-10-18
+
+Ask: scheduled Claude agents (applying, LinkedIn, Upwork, forums) need memory across runs (cursors, caps, items
+already seen, halts, run history) kept in the pipeline over MCP, not in local files or their own memory. Built from
+the "Agent State API" spec, then its revision 2 (same day, before release: workers of one agent racing on shared
+rows, halts raised mid-run, lists worked on a schedule, long drafts, agents retrying once after a timeout). It ships
+as one migration (`0b8c5799a1ac_agent_state`). Judgment calls (overrule any of them):
+
+- **Owner rows = rows with the `locked` flag**, not "anything the owner touched". Otherwise rewinding an agent's
+  cursor from the State page would freeze that agent for good. Rows you add are locked by default; editing an agent's
+  row keeps it writable unless you tick "Owner row". Rules for agents (rev 2): in a fixed section they can't change or
+  delete an owner row; in a list they may only `merge` fields into it (and set its `due`), not set, delete or expire
+  it. Rejections read `owner_row: …`. A locked row always reads `by: owner`, also after an agent merged into it.
+  run_start lists the owner rows of its brief under `owner`. Agents can't lock or unlock.
+- **No timeline event, no review flag** for state writes (same reasoning as alerts): they aren't deal facts, and
+  ~700 runs a day would bury Review. The State page (rows + Runs list) is where you watch them; what needs you still
+  comes through notify_owner.
+- **Counter windows are UTC** as the spec says: "today" for a daily cap starts at 00:00 UTC, not local midnight.
+- **Names are normalized to lowercase** (`LinkedIn` → `linkedin`) so one typo can't split a namespace in two.
+- **Value limits** (rev 2): fixed sections 500 characters (keeps the brief small), lists 16,000 (drafts). Over → rejected
+  with the limit named, never trimmed. The ~2 KB run_start brief is a design target, not enforced.
+- **`due` and `expires` share one rule:** omitted = unchanged, `null` = cleared (a new row has neither). Rows are read
+  earliest-due first (undated last) within each section; `state_get` returns 100 rows by default (max 500,
+  `more: true` when cut). `run_start include=[lists]` returns each list's rows due now, up to 50.
+- **A stop row halts counting** (rev 2): `count` refuses every item, changing nothing, while any namespace in the call
+  has a live `stop` row, and quotes it (`stopped`). The stop wins even over an idem replay.
+- **`count idem`** replays only a *successful* reply for 24 hours. A refusal spent nothing, so storing it would block a
+  legitimate retry after the cap resets or the stop clears.
+- **`run_end` is idempotent per run** (rev 2): its first reply is stored on the run itself (not in the 24-hour idem
+  table, since runs live 60 days); a repeat returns it and applies nothing. A run closed because its lease ran out
+  (recorded as `error` "Ended without run_end") can still be ended once with its real outcome.
+- **Concurrency:** every read-modify-write (merge, max, counters, leases, run_end) takes SQLite's write lock before it
+  reads (`service._write_lock`), and `seen` is a single upsert, so concurrent workers never lose a merge, an increment
+  or a cursor advance. Tested with 30-60 parallel calls.
+- **`seen` ids expire** after `ttl_days` (default 90); an expired id counts as new again at once, not only after the
+  nightly purge.
+- Small additions that save agents calls or mistakes: `seen(mark=false)` checks without marking; a change can name
+  another `ns` (set a shared stop from run_end); times accept `now`, `30m / 12h / 7d` as well as ISO; `merge` with a
+  null field drops it; run_start also returns list names with row counts.
+- **"Forget namespace"** (State page, owner only) deletes all of an agent's rows, counters, seen ids and runs — for
+  retiring an agent. The smoke test uses it to clean up after itself, so prod keeps no residue.
+- REST endpoints mirror the six tools (`/api/state…`) for scripts with an API key; Claude agents use MCP.
+- Nightly (the backup timer): expired rows and seen ids, idem keys older than 24 hours, counter windows idle for 90
+  days and runs older than 60 days are deleted. The backup itself is a full SQLite snapshot, so the new tables are in it.
+
+### Re-review fixes (same day, before release)
+
+Four independent audits (concurrency, spec conformance, input edges / security, web UI); every finding re-checked
+before fixing. Judgment calls in the fixes:
+- **Owner list rows:** agents may add or update fields, not remove them. A merge with a null field on an owner row
+  is refused; otherwise "merge but not set" could be emptied field by field.
+- **`max` refuses mixed kinds** (number vs text, booleans): as text "9" > "10", which would move a cursor back. ISO
+  times compare as times, offsets included.
+- **`count idem` belongs to the call:** the same key with different items (another agent, another cap) is a new spend.
+- **Omitting `value` on an existing row keeps it** (change only due / expires / lock). The State page uses this to send
+  only what you changed, so a lock-only save can't overwrite an agent's newer write or round a big number.
+- **MCP takes `changes` as plain objects**, validated one by one: a typed model made one bad change reject the whole
+  call (leaving a run_end's lease held) and dropped unknown fields silently.
+- **REST commits before it answers** (`api.DB`, FastAPI dependency `scope="function"`). This applies to every endpoint
+  and predates the module: before, a client could be told a write succeeded whose commit hadn't run (or failed).
+- Left as is: your edit of a value while an agent merges into it is last-writer-wins; an owner row you unlock reads
+  `by: owner` until an agent writes it (`locked` is the protection flag); the MCP SDK pretty-prints text content
+  (`structuredContent` is compact).
+
+## Message templates are recommended examples, not fixed text — 2026-10-18
+
+Ask: templates are a recommendation and an example for the agent, not text it sends word for word. (This reverses the
+2026-10-14 answer "agent copy word for word".)
+
+- **Agents adapt the current message**: keep its point, tone and length, change the wording to fit the person and
+  the post, or send it as is when it already fits. Placeholders are filled only with facts the agent verified; one it
+  can't fill is worded around, never invented. Before, an unfillable placeholder meant "don't send, notify_owner".
+- **Nothing else in the 2026-10-15 categories work changes.** Categories with a purpose, agents creating and editing
+  them for review, and usage per platform all hold for examples too. "Used N×" now means "messages based on it", and
+  the reply-rate comparison compares approaches rather than exact wording. The agent still logs the text it
+  actually sent, so you can see how far it strayed.
+- **Kept: no current message means don't send.** A category without an example still blocks agents (they
+  notify_owner), so nothing goes out in a category you haven't written an example for.
+- Only wording changed (MCP instructions and tool descriptions, the Messages page, comments). No schema or behaviour
+  change in the server.
+
+### Re-review fixes (message categories and templates) — 2026-10-18
+
+Independent audit of the 2026-10-15 categories work and the examples change (server, MCP contract, UI).
+- **"Already contacted" is the stage, not `template_id`.** A deal's template_id is only its first message for
+  reply credit; replied or hand-written deals never get one, so it can't tell an agent whether someone was
+  contacted. First-contact categories now say "only while the deal is still a lead (nothing sent to them yet)",
+  in the seeded purposes and the instructions. Anything sent moves a deal past lead.
+- **No current message ⇒ don't write one** is now in the instructions too, not only in the error.
+  get_message_template returns the category's name and purpose, so an agent that calls it directly still
+  sees when the message applies.
+- **An agent's new message goes live by itself only as a category's first message.** Before, it also did in a
+  category you'd left with none current. A message you add still becomes current when none is. Agents
+  can't un-current a message (that would stop all sending in that category); only you can.
+- **Saves from the Messages page carry the version they showed.** "Looks good", "Use this" or an editor
+  save on a message an agent changed since you loaded the page is refused (409, "reload and look again"),
+  so you never approve or overwrite text you didn't see. Agents and older clients that don't send it are unaffected.
+- **Template ids are never reused** (AUTOINCREMENT, added by the same unreleased migration's table rebuild).
+  Agents keep ids; before, deleting an unused message and adding another handed the new one the old id.
+- A template sent before the client's reply but logged after it now counts as the first message.
+- Category names compare accent- and case-insensitively; keys drop accents ("École" → `ecole`), never end in `_`.
+  Category creates take the write lock, so two agents adding one name get one category and a refusal.
+- UI: Insights no longer scrolls sideways on a phone (long labels wrap and show "(deleted)"; the table
+  scrolls inside its card); long links wrap in message cards; renames refresh open timelines; buttons
+  name their message.
+- Left as is: a first message set by hand (Drawer / update_opportunity) or by the backfill counts toward
+  reply rates without a logged use; a deleted message can't be logged again except on its own deal; the
+  Drawer's first-message list includes every category; MCP validation errors from the SDK are multi-line.

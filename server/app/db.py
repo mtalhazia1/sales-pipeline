@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -8,7 +9,11 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app import config
 
 config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-engine = create_engine(f"sqlite:///{config.DB_PATH}", connect_args={"check_same_thread": False})
+engine = create_engine(
+    f"sqlite:///{config.DB_PATH}", connect_args={"check_same_thread": False},
+    # JSON columns keep non-ASCII text as is, so substring search (agent state `q`) matches "José".
+    json_serializer=lambda obj: json.dumps(obj, ensure_ascii=False),
+)
 
 
 @event.listens_for(engine, "connect")
@@ -19,6 +24,8 @@ def _sqlite_pragmas(dbapi_conn, _record):
     cur.execute("PRAGMA busy_timeout=5000")
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.close()
+    # SQLite's lower() folds ASCII only; agent-state search uses this so "JOSÉ" finds "josé".
+    dbapi_conn.create_function("casefold", 1, lambda v: v.casefold() if isinstance(v, str) else v, deterministic=True)
 
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)

@@ -11,6 +11,7 @@ import { Pipeline } from "./pages/Pipeline";
 import { Review } from "./pages/Review";
 import { Insights } from "./pages/Insights";
 import { Messages } from "./pages/Messages";
+import { State } from "./pages/State";
 import { Settings } from "./pages/Settings";
 import { Login } from "./pages/Login";
 import { Consent } from "./pages/Consent";
@@ -27,6 +28,7 @@ export function App() {
         <Route path="review" element={<Review />} />
         <Route path="messages" element={<Messages />} />
         <Route path="insights" element={<Insights />} />
+        <Route path="state" element={<State />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

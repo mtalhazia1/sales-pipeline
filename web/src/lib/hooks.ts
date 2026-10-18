@@ -1,6 +1,19 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { api, type Agenda, type AppNotification, type Detail, type MessageTemplate, type Reminder, type TemplateWithUsage, type Summary } from "./api";
+import {
+  api,
+  type Agenda,
+  type AgentRun,
+  type AppNotification,
+  type Detail,
+  type MessageCategory,
+  type MessageTemplate,
+  type Reminder,
+  type StateChangeResult,
+  type StateView,
+  type TemplateWithUsage,
+  type Summary,
+} from "./api";
 import { useToast } from "../components/ui";
 
 export function useAgenda() {
@@ -124,7 +137,14 @@ export function useTemplates(includeArchived = false) {
   });
 }
 
-/** Create / edit / pick current / delete first-contact message variants. */
+export function useTemplateCategories(includeArchived = false) {
+  return useQuery({
+    queryKey: ["template-categories", includeArchived],
+    queryFn: () => api.get<MessageCategory[]>(`/template-categories${includeArchived ? "?include_archived=true" : ""}`),
+  });
+}
+
+/** Create / edit / pick current / delete message variants and their categories. Saving one unchanged marks it reviewed. */
 export function useTemplateActions() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -133,16 +153,100 @@ export function useTemplateActions() {
       mutationFn: fn,
       onSuccess: () => {
         qc.invalidateQueries({ queryKey: ["templates"] });
+        qc.invalidateQueries({ queryKey: ["template-categories"] });
         qc.invalidateQueries({ queryKey: ["stats"] }); // Insights labels variants by name
+        qc.invalidateQueries({ queryKey: ["agenda"] }); // the Messages review badge
+        qc.invalidateQueries({ queryKey: ["opp"] }); // timelines name the template a message was based on
+        qc.invalidateQueries({ queryKey: ["activity"] });
         if (done) toast.ok(done);
       },
-      onError: (e) => toast.error(e),
+      onError: (e) => {
+        toast.error(e);
+        // A refused stale save (409): show what the agent changed instead of the old text.
+        qc.invalidateQueries({ queryKey: ["templates"] });
+        qc.invalidateQueries({ queryKey: ["template-categories"] });
+      },
     });
   return {
     create: m((body: { category: string; name: string; subject?: string; body: string; is_current?: boolean }) => api.post<MessageTemplate>("/templates", body), "Message added"),
-    update: m(({ id, ...patch }: { id: number } & Partial<Pick<MessageTemplate, "name" | "subject" | "body" | "is_current">>) =>
+    // `updated_at` is the version on screen: the server refuses the save if an agent changed it since.
+    update: m(({ id, ...patch }: { id: number; updated_at: string } & Partial<Pick<MessageTemplate, "name" | "subject" | "body" | "is_current">>) =>
       api.patch<MessageTemplate>(`/templates/${id}`, patch),
     ),
     remove: m(({ id }: { id: number }) => api.del(`/templates/${id}`), "Message deleted"),
+    createCategory: m((body: { name: string; purpose?: string; has_subject: boolean }) => api.post<MessageCategory>("/template-categories", body), "Category added"),
+    updateCategory: m(({ key, ...patch }: { key: string; updated_at: string } & Partial<Pick<MessageCategory, "name" | "purpose" | "has_subject">>) =>
+      api.patch<MessageCategory>(`/template-categories/${key}`, patch),
+    ),
+    removeCategory: m(({ key }: { key: string }) => api.del(`/template-categories/${key}`), "Category deleted"),
   };
+}
+
+const query = (params: Record<string, string | number | undefined>) =>
+  new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)])).toString();
+
+/** Agent state rows (filtered) plus namespaces, sections in use and current counters. */
+export function useAgentState(params: { ns?: string; section?: string; q?: string; limit?: number }) {
+  const qs = query(params);
+  return useQuery({
+    queryKey: ["state", qs],
+    queryFn: () => api.get<StateView>(`/state${qs ? `?${qs}` : ""}`),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useRuns(params: { ns?: string; status?: string; limit?: number }) {
+  const qs = query(params);
+  return useQuery({
+    queryKey: ["runs", qs],
+    queryFn: () => api.get<AgentRun[]>(`/state/runs${qs ? `?${qs}` : ""}`),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** due / expires: omitted = unchanged, null = cleared. */
+export type StateChange = {
+  ns: string;
+  section: string;
+  key: string;
+  value?: unknown;
+  op?: "set" | "delete";
+  due?: string | null;
+  expires?: string | null;
+  locked?: boolean;
+};
+
+/** Owner edits to agent state. The server applies or rejects each change; a rejection becomes the error toast. */
+export function useStateActions() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: async ({ ns, ...change }: StateChange) => {
+      const r = await api.post<StateChangeResult>("/state", { ns, changes: [change] });
+      if (r.rejected?.length) throw new Error(r.rejected[0].reason);
+      return r;
+    },
+    onSuccess: (_r, c) => {
+      qc.invalidateQueries({ queryKey: ["state"] });
+      toast.ok(c.op === "delete" ? "Row deleted" : "Saved");
+    },
+    onError: (e) => toast.error(e),
+  });
+}
+
+/** Retire an agent: delete everything in its namespace (rows, counters, seen ids, runs). */
+export function useForgetNamespace() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: (ns: string) => api.del<{ deleted: number }>(`/state/namespaces/${encodeURIComponent(ns)}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["state"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      toast.ok("Namespace forgotten");
+    },
+    onError: (e) => toast.error(e),
+  });
 }
