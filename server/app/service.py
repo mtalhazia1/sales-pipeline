@@ -162,6 +162,8 @@ MAX_LEN = {"description": 50_000, "notes": 20_000, "message": 10_000, "summary":
 def _clean(field: str, value: Any) -> Any:
     if isinstance(value, list | dict):
         raise ServiceError(f"{field} must be a single value, not a list or object.")
+    if value is not None and not isinstance(value, str) and field not in ("value", "fit", "inbound", "template_id"):
+        raise ServiceError(f"{field} must be text.")
     if isinstance(value, str):
         value = value.strip()
         if value == "" and field not in ("company",):
@@ -370,7 +372,7 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
     unknown = set(data) - EDITABLE - {"reminder_at", "reminder_note"}
     if unknown:
         raise ServiceError(f"Unknown field(s): {', '.join(sorted(unknown))}.")
-    if existing := find_duplicate(s, data.get("application_url")):
+    if existing := find_duplicate(s, _clean("application_url", data.get("application_url"))):
         # Includes deleted ones: a deletion sticks, so an agent re-finding the same posting can't revive it.
         return existing, False
 
@@ -399,7 +401,7 @@ def create(s: Session, actor: Actor, data: dict) -> tuple[Opportunity, bool]:
             s.add(opp)
             s.flush()
     except IntegrityError:
-        if existing := find_duplicate(s, data.get("application_url")):
+        if existing := find_duplicate(s, _clean("application_url", data.get("application_url"))):
             return existing, False
         raise
     _event(s, opp, actor, "created", None, _loggable({k: [None, v] for k, v in values.items()
@@ -467,8 +469,8 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
         if opp.stage in domain.OPEN_STAGES:
             _rewind_milestones(opp, opp.stage)
         _stamp_milestones(opp, opp.stage, now)
-        if "waiting_on" not in changes and ((wo := _default_waiting(opp.stage)) or opp.stage == "lead"):
-            opp.waiting_on = wo  # back to lead: nothing was sent, so nobody's move
+        if "waiting_on" not in changes:
+            opp.waiting_on = _default_waiting(opp.stage)  # e.g. back to lead or on to call: nobody's move
         if lost_at and opp.stage in domain.OPEN_STAGES:
             # Reopening a lost deal (e.g. Undo on "Pass") brings back the reminders losing it closed.
             for r in opp.reminders:
@@ -528,6 +530,10 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
     # Later templates (a follow-up, a rate card) are counted as uses but never re-credit the deal's reply.
     if template_id is not None and opp.template_id is None and (opp.replied_at is None or when < opp.replied_at):
         opp.template_id = template_id
+    # Whose move follows the latest contact: back-filled history (an older message or call) doesn't flip it.
+    prior = s.scalar(select(func.max(Event.occurred_at)).where(
+        Event.opportunity_id == opp.id, Event.kind.in_(("client_message", "my_message", "call"))))
+    latest = prior is None or when >= prior
     if kind == "client_message":
         if opp.stage == "lead":
             opp.inbound = opp.inbound or opp.applied_at is None
@@ -536,17 +542,17 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
         revive = opp.stage == "lost" and opp.lost_reason == "no_response"
         if revive or (opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["replied"]):
             opp.stage = "replied"
-        if opp.stage in domain.OPEN_STAGES:
+        if opp.stage in domain.OPEN_STAGES and latest:
             opp.waiting_on = "me"
     elif kind == "my_message":
         if opp.stage == "lead":
             opp.stage = "applied"
-        if opp.stage in domain.OPEN_STAGES:
+        if opp.stage in domain.OPEN_STAGES and latest:
             opp.waiting_on = "client"
     elif kind == "call":
         if opp.stage in domain.OPEN_STAGES and order[opp.stage] < order["call"]:
             opp.stage = "call"
-        if opp.stage in domain.OPEN_STAGES:
+        if opp.stage in domain.OPEN_STAGES and latest:
             opp.waiting_on = None  # a call is booked or held: nobody owes a message until someone writes
     if opp.stage != before["stage"]:
         _stamp_milestones(opp, opp.stage, when)
@@ -566,9 +572,9 @@ def log_activity(s: Session, actor: Actor, opp_id: int, kind: str, body: str | N
 def mark_reviewed(s: Session, actor: Actor, opp_id: int | None = None, ids: list[int] | None = None) -> int:
     q = select(Opportunity).where(Opportunity.needs_review.is_(True), Opportunity.archived_at.is_(None))
     if opp_id is not None:
-        q = q.where(Opportunity.id == opp_id)
+        q = q.where(Opportunity.id == (_id(opp_id) or 0))
     if ids is not None:  # only what the reviewer actually saw — not whatever an agent added since
-        q = q.where(Opportunity.id.in_(ids))
+        q = q.where(Opportunity.id.in_([i for i in ids if _id(i)]))
     opps = s.scalars(q).all()
     for opp in opps:
         opp.needs_review = False
@@ -610,6 +616,8 @@ def add_reminder(s: Session, actor: Actor, opp_id: int, due: str | datetime, not
     due_at = parse_when(due, get_timezone(s))
     if due_at is None:
         raise ServiceError("A reminder needs a date.")
+    if not isinstance(note, str | None):
+        raise ServiceError("note must be text.")
     r = Reminder(opportunity=opp, due_at=due_at, note=(note or "").strip()[:500], created_by=actor.name)
     s.add(r)
     s.flush()
@@ -641,7 +649,7 @@ def update_reminder(s: Session, actor: Actor, reminder_id: int, *, done: bool | 
 
 
 def delete_reminder(s: Session, actor: Actor, reminder_id: int) -> None:
-    r = s.get(Reminder, reminder_id)
+    r = s.get(Reminder, i) if (i := _id(reminder_id)) else None
     if not r or r.opportunity.archived_at:
         raise ServiceError(f"Reminder {reminder_id} not found.", 404)
     _touch(r.opportunity, actor, activity=False)
@@ -897,6 +905,7 @@ def _has_messages(s: Session, key: str) -> bool:
 
 
 def create_template(s: Session, actor: Actor, data: dict) -> MessageTemplate:
+    _write_lock(s)  # the owner deleting this category at the same moment: no orphaned message
     if data.get("category") is None:
         raise ServiceError("Pass the category the message belongs to (a key from list_message_templates).")
     c = _category(s, data.get("category"))
@@ -1003,7 +1012,7 @@ def notifications(s: Session, *, unread_only: bool = False, limit: int = 200) ->
 
 
 def mark_notifications_read(s: Session, ids: list[int], read: bool = True) -> int:
-    rows = s.scalars(select(Notification).where(Notification.id.in_(ids))).unique().all()
+    rows = s.scalars(select(Notification).where(Notification.id.in_([i for i in ids if _id(i)]))).unique().all()
     for n in rows:
         if read and not n.read_at:
             n.read_at = utcnow()
@@ -1663,7 +1672,7 @@ def agenda(s: Session) -> dict:
 def stats(s: Session, days: int | None = 90) -> dict:
     """Funnel per channel/network for outbound work applied to in the window, plus the open
     pipeline and a 12-week activity series."""
-    if days is not None and not (isinstance(days, int) and 0 < days <= 36_500):
+    if days is not None and not (isinstance(days, int) and not isinstance(days, bool) and 0 < days <= 36_500):
         raise ServiceError("days is 1-36500, or null for all time.")
     now = utcnow()
     since = now - timedelta(days=days) if days else datetime.min
@@ -1765,6 +1774,6 @@ def activity_feed(s: Session, *, limit: int = 100, actor_type: str | None = None
             .order_by(Event.id.desc()).limit(max(1, min(limit, 300))))
     if actor_type:
         stmt = stmt.where(Event.actor_type == actor_type)
-    if before_id:
+    if before_id and _id(before_id):  # a cursor past any real id: nothing to skip
         stmt = stmt.where(Event.id < before_id)
     return [event_dict(e, o) for e, o in s.execute(stmt).all()]

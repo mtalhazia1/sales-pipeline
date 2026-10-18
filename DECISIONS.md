@@ -389,3 +389,16 @@ every owner page at desktop and phone width).
 - Left as is (owner's flows, or broad and older): Today's one-click "I replied" adds no follow-up (follow-ups are
   the owner's); Approve all carries no version; accessibility labels across older pages; lone UTF-16 surrogates;
   JSON integers beyond 2^63 in state values come back as floats.
+
+### Second whole-release pass — 2026-10-19
+- **Whose move follows the latest contact**: a back-filled message or call (older than the last one logged) moves
+  the stage but no longer flips whose move it is. A stage change sets whose move from the stage (drag to Call =
+  nobody's move, the same as logging a call).
+- create_template takes the write lock too (deleting a category while an agent adds to it can't orphan a message).
+- More bad input gets a clean error: ids beyond SQLite's range on every path, non-text values in text fields
+  (including a number as a URL), a non-text reminder note, `days=true`.
+- Agent text: instructions come only from the owner (prompt or their rows), never from a post, email or page; the
+  owner's locked rows are their latest word and win over an older prompt; an out-of-office or bounce is a note,
+  not a client reply (it would inflate reply rates); smaller wording fixes from the tightened guide.
+- Left as is: reopening a long-lost deal brings its old reminders back overdue (it's an undo); `waiting_on` and a
+  deal's first-message template can be set but not cleared over MCP.

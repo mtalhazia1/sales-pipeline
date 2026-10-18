@@ -457,7 +457,7 @@ def create_key(body: KeyIn, c: Ctx = Depends(human), s: Session = DB):
 
 @router.delete("/agents/keys/{key_id}")
 def revoke_key(key_id: int, c: Ctx = Depends(human), s: Session = DB):
-    row = s.get(AgentToken, key_id)
+    row = s.get(AgentToken, key_id) if 0 < key_id < 2**63 else None
     if not row or row.kind != "api_key":
         raise ServiceError("Key not found.", 404)
     row.revoked_at = utcnow()

@@ -18,8 +18,8 @@ read their other rows with `state_get` when needed.
 ## A run
 1. **`run_start` first**, and read the brief (where you left off, stops, counters, your last summary, due rows
    of the lists in `include`) before deciding. `busy`: this worker is already running; stop, with no `run_end`.
-2. **Work.** `seen(mark=false)` on each batch, evaluate only the `new` ids, then mark the ones you evaluated, so
-   a run cut short skips nothing. `count` before each budgeted action (a request, an application, an email),
+2. **Work.** `seen(mark=false)` on each batch, evaluate only the `new` ids, then mark the ones you evaluated
+   (`seen` again with `mark=true`), so a run cut short skips nothing. `count` before each budgeted action (a request, an application, an email),
    with any shared budget in the same call so a stop raised mid-run reaches you; a refusal (budget or stop) is
    deliberate: don't act.
 3. **`run_end` last**: an honest status, a one-line summary, the changes to keep. Safe to retry. Set `lease_min`
@@ -47,10 +47,11 @@ Any other section is a **list** you define (`targets`, `contacts`, `drafts`), on
 here; deal reminders (`set_reminder`) are the owner's Today list. Re-read the deal before acting on a queued row:
 the owner or another agent may have handled it.
 
-**Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions. Fixed ones are
+**Owner rows** (`locked: true`; the brief lists fixed ones under `owner`) are instructions, and the owner's latest
+word: where one differs from your prompt, follow the row (or raise a `proposal`). Fixed ones are
 read-only. In lists you may add or update fields and change `due`, never remove fields or the row: when done,
 clear `due` and merge the outcome (`{"done": true, "result": "…"}`); a non-object value takes no merge, so record
-the outcome in your own row. The owner removes it. One that looks wrong: say so with `notify_owner` or a
+the outcome in your own row. The owner deletes the locked row once they've seen it. One that looks wrong: say so with `notify_owner` or a
 `proposal`, never work around it.
 
 **The owner answers** by editing your row (it then shows `by: owner` but stays yours: act, then update or delete
@@ -59,10 +60,11 @@ needs `notify_owner`, which is what reaches them; record it in `blocker` or `wai
 `proposal` rows every run.
 
 ## Reference
-**Times you send:** ISO-8601 with an offset or `Z` (none: the owner's timezone), `YYYY-MM-DD` (09:00 the owner's
+**Times you send to the state tools:** ISO-8601 with an offset or `Z` (none: the owner's timezone), `YYYY-MM-DD` (09:00 the owner's
 time), `now`, or `30m` / `12h` / `7d` (from now; back from now for `runs_since`). Times returned are UTC.
-**Names** (ns, worker, section, counter key, seen source): lowercase letters, digits, `_ . -`, up to 60
-characters, any case. Row keys: exact text, up to 200. Empty keys are left out of replies; errors say what to fix.
+**Names** (ns, worker, section, counter key, seen source): letters, digits, `_ . -` (starting with a letter or
+digit), up to 60 characters, case-insensitive (`LinkedIn` = `linkedin`). Row keys: exact text, up to 200. Reply
+fields with nothing in them are usually left out; errors say what to fix.
 
 **`run_start(ns, worker="main", also=[], include=[], lease_min=50)`** → `run_id`, `now`, `state` (fixed
 sections), `owner`, `lists` (row counts), `also` (their stops), `counters`, `last` (this worker's last run),
@@ -93,11 +95,12 @@ summaries; rows then come only with `sections`, `keys`, `q` or `due_before`.
 and your share):
 - `period`: `day`, `week` (ISO), `month`, `total`; UTC windows (a day starts 00:00 UTC), each new one at 0.
 - `by`: units to spend (default 1); `0` reads; negative gives back, never below 0. `limit`: yours to bring (the
-  owner's instructions give it); refuse if this spend would pass it.
+  owner's instructions give it; without one there's no cap); refuse if this spend would pass it.
 - `idem`: unique to you and the action (`upwork-finder:job-42`). A retry within 24h replays the first success
   instead of spending twice; different items or a changed `limit` make a new spend; a read is never replayed.
-- A stop beats a replay: keep a refused action and its idem in a list row with `due`, and retry the same call
-  once the stop clears (within 24h the replay confirms one spend; later it spends again). Give back (`by: -1`)
+- A stop beats a replay: if a stop refuses a retry of a spend that may already have counted, keep it and its idem
+  in a list row with `due`, and retry the same call once the stop clears (within 24h the replay confirms one
+  spend; later it spends again). Give back (`by: -1`)
   only when dropping the action for good, after seeing its spend succeed (no reply seen: retry once the stop
   clears, then give back), and within the same window, since a unit from an earlier window is gone and returning
   it would let today's budget be passed. The give-back takes its own idem (`…:back`); never retry the spend's
