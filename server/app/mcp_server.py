@@ -47,9 +47,8 @@ Deals:
   answer from the owner ("not until Q1"): log the client_message, then set waiting_on=client.
 - Keep one next step on every deal in progress (past lead); a deal without one gets forgotten.
   set_reminder adds one, update_reminder moves or rewords it (its id is next_reminder.id in the deal's
-  summary). Reminders are the owner's Today list: steps they take, following up with the client
-  included (e.g. 'Follow up if no reply'). A scheduled agent's own to-dos belong in a state list row
-  with `due`.
+  summary). Reminders are the owner's Today list: steps they take. A scheduled agent's own to-dos,
+  follow-ups it sends included, belong in a state list row with `due` instead.
 - The job post goes in `description`, your assessment in `notes`, running commentary in a note
   activity. `fit` 1-5 is your judgment of the match (5 = ideal for an AI / full-stack software shop).
 - Job applications: the tailored resume and cover letter live in the owner's Google Drive; store their
@@ -64,8 +63,8 @@ Messages:
   fits). Fill {placeholders} with facts you checked; if you can't, write around it rather than guess.
 - First-contact categories are for deals still at lead. A category with no current message means the
   owner hasn't decided what to send: ask them rather than write your own.
-- What is unique to a deal (proposals, cover letters) is written fresh. Replies and follow-ups are the
-  owner's unless a category's purpose says otherwise.
+- What is unique to a deal (proposals, cover letters) is written fresh. Replies are the owner's;
+  follow-ups too, unless a category's purpose or your instructions give them to you.
 - After sending, log_activity kind=my_message with the template_id it was based on and what you
   actually sent, so the owner sees it and Insights counts it per platform.
 - Create or edit categories and messages when the owner asks; they review what you write.
