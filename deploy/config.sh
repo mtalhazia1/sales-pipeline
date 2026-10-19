@@ -2,6 +2,6 @@
 APP=sales-pipeline
 PORT=8100                              # see "Port registry" in deploy/README.md
 DOMAIN=sales.muhammadtalhabinzia.com
-HOST=<server-ip>                       # server v2 public IP (becomes the EIP <elastic-ip> at FirstGlance cutover)
-SSH_USER=<ssh-user>
-SSH_KEY=~/.ssh/<server-key>
+# HOST, SSH_USER, SSH_KEY: server access, kept out of the (public) repo.
+[ -f deploy/config.local.sh ] || { echo "deploy/config.local.sh missing: copy deploy/config.local.example.sh" >&2; exit 1; }
+source deploy/config.local.sh

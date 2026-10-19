@@ -6,3 +6,11 @@ __pycache__/
 web/node_modules/
 web/dist/
 *.tsbuildinfo
+# Secrets and server access never go in this (public) repo
+deploy/config.local.sh
+.env
+.env.*
+*.db
+*.sqlite*
+*.pem
+*.key

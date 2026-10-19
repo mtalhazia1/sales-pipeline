@@ -1,6 +1,6 @@
 # Deploying — and the convention for every project on the shared EC2
 
-The server (`<instance-id>`, Ubuntu 24.04) hosts several independent projects. Each one follows
+The server (Ubuntu 24.04) hosts several independent projects. Each one follows
 the same pattern so they cannot interfere with each other, and so the next project is a copy-paste:
 
 | Concern | Per project | Here |
@@ -27,9 +27,11 @@ database server, no shared users, no shared secrets.
 
 ## First time (once)
 
+0. `cp deploy/config.local.example.sh deploy/config.local.sh` and fill in the server's host, SSH user and key
+   (git-ignored: this repo is public, so server access details never go in it).
 1. DNS: `A` record for `DOMAIN` → the server IP (muhammadtalhabinzia.com is at Namecheap).
 2. Ports 80 + 443 must be reachable from the internet for Let's Encrypt and for Claude's connector
-   (security group `<security-group>`).
+   (the server's security group); keep SSH limited to your own IPs.
 3. `bash deploy/provision.sh app` — user, units, code, start (no DNS needed); then
    `bash deploy/provision.sh web` — nginx site + TLS cert (needs the DNS record live).
 4. `bash deploy/admin.sh create-user you@example.com "Your Name"` — prints a password; change it in Settings.
@@ -38,17 +40,17 @@ database server, no shared users, no shared secrets.
 
 `bash deploy/deploy.sh` — builds the UI locally, rsyncs code, re-installs the systemd units and the nginx
 site from the repo (a site file that fails `nginx -t` is rolled back — nginx is shared), installs Python
-deps, restarts (Alembic migrations run on start), health-checks. The server never drifts from the repo. Config (host, key, domain, port) lives in `deploy/config.sh`.
+deps, restarts (Alembic migrations run on start), health-checks. The server never drifts from the repo. Config: app, domain and port in `deploy/config.sh`; host, SSH user and key in the git-ignored
+`deploy/config.local.sh`.
 
 ## Operating
 
 ```bash
-ssh -i ~/.ssh/<server-key> <ssh-user>@<host>
+ssh -i <key> <user>@<host>                     # from deploy/config.local.sh
 sudo systemctl status sales-pipeline          # state
 sudo journalctl -u sales-pipeline -n 100      # logs
 ls /var/lib/sales-pipeline/backups            # snapshots (restore: stop service, copy over sales.db, start)
 ```
 
-When FirstGlance cuts over to this box (the Elastic IP <elastic-ip> moves here, releasing <server-ip>),
-re-point `@`, `www` and `sales` at Namecheap to <elastic-ip> and update `HOST` in `deploy/config.sh` and
-`~/Code/personal-site/deploy/deploy.sh`.
+If the server's public IP changes, re-point the DNS records and update `HOST` in `deploy/config.local.sh`
+(and in the other projects on the box).
