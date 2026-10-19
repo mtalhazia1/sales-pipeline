@@ -407,7 +407,8 @@ every owner page at desktop and phone width).
 - **Reverted "whose move follows the latest contact"** (second pass): comparing timestamps made a date-only reply
   (09:00) lose to an earlier timed entry the same day, so a real client reply never reached Your move, and it left
   revived or back-filled deals in nobody's list. Back to the simple rule: each logged message or call sets whose
-  move. Known gap, accepted: back-filling an old call on a deal the client has since written on clears Your move.
+  move. Known gap, accepted: back-filling an older message or call (logged after a newer one) can flip whose move,
+  e.g. an old call clears Your move on a deal the client has since written on.
 - An explicitly passed `waiting_on` now wins even when it equals the current value (a stage change otherwise resets
   it to the stage's default); Today's Undo passes it back, so undoing "Pass" restores whose move it was.
 - `inbound: null` gets a clean error (was a 500).

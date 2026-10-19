@@ -19,7 +19,7 @@ An **opportunity** = a job or project at a client company.
 | Channel | LinkedIn, Email, Upwork, Toptal, Direct / Website, Referral, Other |
 | Network | None (default), LinkedIn, FirstGlance, Referral / personal |
 | Stage | Lead → Sent to matcher (Toptal only) → Applied → Replied → Call booked → Proposal sent → Contract done / Lost (+ reason) |
-| Whose move | mine / client's — derived from the last message, editable |
+| Whose move | mine / client's — set by the most recently logged message or call, editable |
 | Also | inbound flag, contact (name, email, profile), budget as posted, deal value (USD), fit 1–5, notes, job post |
 | Reminders | date + note, any number per opportunity |
 

@@ -486,8 +486,9 @@ def update(s: Session, actor: Actor, opp_id: int, data: dict) -> Opportunity:
     # Field edits are bookkeeping; only a stage move counts as deal activity.
     _touch(opp, actor, activity="stage" in changes)
     # Long text fields are logged as "edited" rather than copied into the audit trail.
-    logged = {k: ([None, "edited"] if k in ("description", "notes") else v) for k, v in changes.items()}
-    logged |= {k: [before[k], getattr(opp, k)] for k in derived if k not in logged and getattr(opp, k) != before[k]}
+    logged = {k: ([None, "edited"] if k in ("description", "notes") else v) for k, v in changes.items() if k not in derived}
+    # Derived fields log what they ended as (a won or lost deal is nobody's move, whatever was asked).
+    logged |= {k: [before[k], getattr(opp, k)] for k in derived if getattr(opp, k) != before[k]}
     if closed_reminders:
         logged["reminders_closed"] = [None, closed_reminders]
     if reopened:
